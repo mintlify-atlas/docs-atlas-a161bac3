@@ -1,0 +1,398 @@
+---
+title: Database API
+description: Database access layer for managing persons and face records
+---
+
+APIs for interacting with the ObjectBox database to manage persons and their associated face records.
+
+## PersonDB
+
+Database access layer for managing person records.
+
+```kotlin
+@Single
+class PersonDB {
+    private val personBox = ObjectBoxStore.store.boxFor(PersonRecord::class.java)
+    
+    fun addPerson(person: PersonRecord): Long
+    fun removePerson(personID: Long)
+    fun getCount(): Long
+    fun getAll(): Flow<MutableList<PersonRecord>>
+}
+```
+
+### Methods
+
+#### addPerson
+
+Add a new person to the database.
+
+<ParamField path="person" type="PersonRecord" required>
+  The person record to add
+</ParamField>
+
+**Returns:** `Long` - The auto-generated person ID
+
+```kotlin
+val person = PersonRecord(
+    personName = "John Doe",
+    numImages = 0,
+    addTime = System.currentTimeMillis()
+)
+val personID = personDB.addPerson(person)
+```
+
+#### removePerson
+
+Remove a person and all associated face records from the database.
+
+<ParamField path="personID" type="Long" required>
+  The ID of the person to remove
+</ParamField>
+
+```kotlin
+personDB.removePerson(personID = 123)
+```
+
+<Warning>
+This operation only removes the `PersonRecord`. You must also call `ImagesVectorDB.removeFaceRecordsWithPersonID()` to delete the associated face embeddings.
+</Warning>
+
+#### getCount
+
+Get the total number of persons in the database.
+
+**Returns:** `Long` - The count of person records
+
+```kotlin
+val totalPersons = personDB.getCount()
+println("Database contains $totalPersons persons")
+```
+
+#### getAll
+
+Get a Flow of all person records, automatically updated when the database changes.
+
+**Returns:** `Flow<MutableList<PersonRecord>>` - Reactive flow of person records
+
+```kotlin
+personDB.getAll().collect { persons ->
+    persons.forEach { person ->
+        println("${person.personName}: ${person.numImages} images")
+    }
+}
+```
+
+<Note>
+The Flow uses `Dispatchers.IO` internally, so database queries happen on a background thread.
+</Note>
+
+### Usage example
+
+Complete workflow for managing persons:
+
+```kotlin
+// Inject PersonDB
+@Single
+class PersonUseCase(
+    private val personDB: PersonDB
+) {
+    // Add a new person
+    fun addPerson(name: String, numImages: Long): Long {
+        return personDB.addPerson(
+            PersonRecord(
+                personName = name,
+                numImages = numImages,
+                addTime = System.currentTimeMillis()
+            )
+        )
+    }
+    
+    // Remove a person
+    fun removePerson(id: Long) {
+        personDB.removePerson(id)
+    }
+    
+    // Get all persons
+    fun getAll(): Flow<List<PersonRecord>> = personDB.getAll()
+}
+```
+
+## PersonUseCase
+
+Use case layer for person management operations, providing a clean API for ViewModels.
+
+```kotlin
+@Single
+class PersonUseCase(
+    private val personDB: PersonDB
+) {
+    fun addPerson(name: String, numImages: Long): Long
+    fun removePerson(id: Long)
+    fun getAll(): Flow<List<PersonRecord>>
+    fun getCount(): Long
+}
+```
+
+### Methods
+
+#### addPerson
+
+Add a new person with the current timestamp.
+
+<ParamField path="name" type="String" required>
+  The person's name
+</ParamField>
+
+<ParamField path="numImages" type="Long" required>
+  Initial number of face images (typically 0)
+</ParamField>
+
+**Returns:** `Long` - The auto-generated person ID
+
+```kotlin
+val personID = personUseCase.addPerson(
+    name = "Alice Johnson",
+    numImages = 0
+)
+```
+
+#### removePerson
+
+Remove a person from the database.
+
+<ParamField path="id" type="Long" required>
+  The person ID to remove
+</ParamField>
+
+```kotlin
+personUseCase.removePerson(id = personID)
+```
+
+#### getAll
+
+Get a reactive Flow of all persons.
+
+**Returns:** `Flow<List<PersonRecord>>` - Flow emitting updated person lists
+
+```kotlin
+val personsFlow = personUseCase.getAll()
+```
+
+#### getCount
+
+Get the total count of persons.
+
+**Returns:** `Long` - Number of persons in database
+
+```kotlin
+val count = personUseCase.getCount()
+```
+
+## ImageVectorUseCase
+
+Use case for face recognition operations, coordinating face detection, embedding generation, and vector search.
+
+```kotlin
+@Single
+class ImageVectorUseCase(
+    private val faceDetector: BaseFaceDetector,
+    private val faceSpoofDetector: FaceSpoofDetector,
+    private val imagesVectorDB: ImagesVectorDB,
+    private val faceNet: FaceNet
+) {
+    data class FaceRecognitionResult(
+        val personName: String,
+        val boundingBox: Rect,
+        val spoofResult: FaceSpoofDetector.FaceSpoofResult? = null
+    )
+    
+    suspend fun addImage(personID: Long, personName: String, imageUri: Uri): Result<Boolean>
+    suspend fun getNearestPersonName(frameBitmap: Bitmap, flatSearch: Boolean): Pair<RecognitionMetrics?, List<FaceRecognitionResult>>
+    fun removeAllImagesForPerson(personID: Long)
+}
+```
+
+### Data classes
+
+#### FaceRecognitionResult
+
+Recognition result for a detected face.
+
+<ResponseField name="personName" type="String">
+  The recognized person's name, or "NOT RECOGNIZED" if no match found
+</ResponseField>
+
+<ResponseField name="boundingBox" type="Rect">
+  Face bounding box coordinates in the frame
+</ResponseField>
+
+<ResponseField name="spoofResult" type="FaceSpoofDetector.FaceSpoofResult?" default="null">
+  Spoof detection result if enabled, null otherwise
+</ResponseField>
+
+### Methods
+
+#### addImage
+
+Add a face image for enrollment.
+
+<ParamField path="personID" type="Long" required>
+  The person's database ID
+</ParamField>
+
+<ParamField path="personName" type="String" required>
+  The person's name
+</ParamField>
+
+<ParamField path="imageUri" type="Uri" required>
+  URI of the image to process
+</ParamField>
+
+**Returns:** `Result<Boolean>` - Success/failure with error details
+
+```kotlin
+val result = imageVectorUseCase.addImage(
+    personID = 123,
+    personName = "John Doe",
+    imageUri = selectedImageUri
+)
+
+result.onSuccess {
+    println("Face enrolled successfully")
+}.onFailure { error ->
+    println("Enrollment failed: ${error.message}")
+}
+```
+
+The method performs:
+1. Face detection on the image
+2. FaceNet embedding generation
+3. Storage in vector database with person metadata
+
+#### getNearestPersonName
+
+Recognize faces in a camera frame.
+
+<ParamField path="frameBitmap" type="Bitmap" required>
+  The camera frame to analyze
+</ParamField>
+
+<ParamField path="flatSearch" type="Boolean" required>
+  Whether to use precise flat search (true) or HNSW approximate search (false)
+</ParamField>
+
+**Returns:** `Pair<RecognitionMetrics?, List<FaceRecognitionResult>>` - Metrics and recognition results for all detected faces
+
+```kotlin
+val (metrics, results) = imageVectorUseCase.getNearestPersonName(
+    frameBitmap = cameraFrame,
+    flatSearch = false
+)
+
+results.forEach { result ->
+    if (result.personName != "NOT RECOGNIZED") {
+        println("Recognized: ${result.personName}")
+        println("Bounding box: ${result.boundingBox}")
+        
+        result.spoofResult?.let { spoof ->
+            if (spoof.isSpoof) {
+                println("WARNING: Spoof detected!")
+            }
+        }
+    }
+}
+```
+
+The pipeline:
+1. Detect all faces in frame
+2. Generate embeddings for each face
+3. Search vector database for matches
+4. Run spoof detection
+5. Return results with metrics
+
+<Tip>
+Use `flatSearch = false` for real-time recognition (faster). Use `flatSearch = true` when accuracy is critical and you have time for linear search.
+</Tip>
+
+#### removeAllImagesForPerson
+
+Remove all face embeddings for a person.
+
+<ParamField path="personID" type="Long" required>
+  The person ID whose face records should be deleted
+</ParamField>
+
+```kotlin
+imageVectorUseCase.removeAllImagesForPerson(personID = 123)
+```
+
+<Note>
+This only removes `FaceImageRecord` entries. To fully remove a person, also call `PersonUseCase.removePerson()`.
+</Note>
+
+### Complete enrollment workflow
+
+```kotlin
+// 1. Create person record
+val personID = personUseCase.addPerson(
+    name = "Alice",
+    numImages = 0
+)
+
+// 2. Enroll multiple face images
+imageUris.forEach { uri ->
+    imageVectorUseCase.addImage(
+        personID = personID,
+        personName = "Alice",
+        imageUri = uri
+    ).onFailure { error ->
+        println("Failed to enroll image: ${error.message}")
+    }
+}
+
+// 3. Update person record with image count
+val updatedPerson = PersonRecord(
+    personID = personID,
+    personName = "Alice",
+    numImages = imageUris.size.toLong(),
+    addTime = System.currentTimeMillis()
+)
+```
+
+### Complete recognition workflow
+
+```kotlin
+// Get camera frame
+val bitmap = cameraPreview.getBitmap()
+
+// Perform recognition
+val (metrics, results) = imageVectorUseCase.getNearestPersonName(
+    frameBitmap = bitmap,
+    flatSearch = false
+)
+
+// Process results
+results.forEach { result ->
+    val isRecognized = result.personName != "NOT RECOGNIZED"
+    val isReal = result.spoofResult?.isSpoof == false
+    
+    when {
+        !isRecognized -> drawBox(result.boundingBox, Color.RED, "Unknown")
+        !isReal -> drawBox(result.boundingBox, Color.YELLOW, "Spoof")
+        else -> drawBox(result.boundingBox, Color.GREEN, result.personName)
+    }
+}
+
+// Display metrics
+metrics?.let {
+    println("Total pipeline time: ${
+        it.timeFaceDetection + 
+        it.timeFaceEmbedding + 
+        it.timeVectorSearch + 
+        it.timeFaceSpoofDetection
+    }ms")
+}
+```
+
+Source: `domain/PersonUseCase.kt`, `domain/ImageVectorUseCase.kt`, `data/PersonDB.kt`

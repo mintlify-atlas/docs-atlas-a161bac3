@@ -71,7 +71,8 @@
               "reference/facenet",
               "reference/face-detectors",
               "reference/vector-database",
-              "reference/data-models"
+              "reference/data-models",
+              "reference/database-api"
             ]
           },
           {
