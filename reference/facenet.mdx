@@ -1,0 +1,96 @@
+---
+title: FaceNet
+description: Generate face embeddings using the FaceNet model
+---
+
+The `FaceNet` class provides face embedding generation using a TensorFlow Lite model. It converts face images into 512-dimensional embedding vectors for face recognition tasks.
+
+## Constructor
+
+```kotlin
+FaceNet(
+    context: Context,
+    useGpu: Boolean = true,
+    useXNNPack: Boolean = true
+)
+```
+
+<ParamField path="context" type="Context" required>
+  Android application context for loading the TFLite model from assets
+</ParamField>
+
+<ParamField path="useGpu" type="Boolean" default="true">
+  Enable GPU acceleration if supported by the device. Falls back to CPU with 4 threads if GPU is not available
+</ParamField>
+
+<ParamField path="useXNNPack" type="Boolean" default="true">
+  Enable XNNPACK delegate for optimized inference on CPU
+</ParamField>
+
+## Methods
+
+### getFaceEmbedding
+
+Generates a 512-dimensional face embedding from a cropped face image.
+
+```kotlin
+suspend fun getFaceEmbedding(image: Bitmap): FloatArray
+```
+
+<ParamField path="image" type="Bitmap" required>
+  Cropped face image to generate embedding from. Will be automatically resized to 160x160 pixels
+</ParamField>
+
+<ResponseField name="return" type="FloatArray">
+  A 512-dimensional embedding vector representing the face features
+</ResponseField>
+
+## Configuration
+
+The FaceNet model has the following fixed configurations:
+
+<ResponseField name="imgSize" type="Int" default="160">
+  Input image size (160x160 pixels). Images are automatically resized to this dimension
+</ResponseField>
+
+<ResponseField name="embeddingDim" type="Int" default="512">
+  Output embedding dimension. The model generates 512-dimensional vectors
+</ResponseField>
+
+<ResponseField name="modelFile" type="String" default="facenet_512.tflite">
+  TFLite model file loaded from the assets folder
+</ResponseField>
+
+## Usage example
+
+```kotlin
+// Initialize FaceNet with GPU acceleration
+val faceNet = FaceNet(
+    context = applicationContext,
+    useGpu = true,
+    useXNNPack = true
+)
+
+// Generate embedding from a cropped face
+val embedding = faceNet.getFaceEmbedding(croppedFaceBitmap)
+
+// Store embedding in database
+imagesVectorDB.addFaceImageRecord(
+    FaceImageRecord(
+        personID = personID,
+        personName = personName,
+        faceEmbedding = embedding
+    )
+)
+```
+
+## Implementation details
+
+The class automatically:
+- Resizes input images to 160x160 pixels using bilinear interpolation
+- Normalizes pixel values from [0, 255] to [0, 1]
+- Detects GPU compatibility and enables GPU delegate when available
+- Falls back to CPU with 4 threads if GPU is unavailable
+- Enables NNAPI acceleration for compatible devices
+
+Source: `domain/embeddings/FaceNet.kt:25`

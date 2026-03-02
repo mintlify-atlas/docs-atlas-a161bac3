@@ -1,0 +1,239 @@
+---
+title: Configuration
+description: Configure FaceNet models, face detectors, and search options for optimal performance
+---
+
+FaceNet Android offers several configuration options to balance accuracy and performance based on your needs.
+
+## Choosing the FaceNet model
+
+The app provides two FaceNet models with different embedding dimensions:
+
+- **facenet.tflite**: Outputs a 128-dimensional embedding (smaller, faster)
+- **facenet_512.tflite**: Outputs a 512-dimensional embedding (larger, more accurate)
+
+### Switching models
+
+<Steps>
+  <Step title="Open FaceNet.kt">
+    Navigate to `app/src/main/java/com/ml/shubham0204/facenet_android/domain/embeddings/FaceNet.kt`
+  </Step>
+  
+  <Step title="Change the model file">
+    Update the `Interpreter` initialization to load your preferred model:
+    
+    ```kotlin FaceNet.kt
+    // For facenet (128-dimensional)
+    interpreter = Interpreter(
+        FileUtil.loadMappedFile(context, "facenet.tflite"), 
+        interpreterOptions
+    )
+    
+    // For facenet-512 (512-dimensional)
+    interpreter = Interpreter(
+        FileUtil.loadMappedFile(context, "facenet_512.tflite"), 
+        interpreterOptions
+    )
+    ```
+  </Step>
+  
+  <Step title="Update the embedding dimension">
+    Change the `embeddingDim` variable to match your model:
+    
+    ```kotlin FaceNet.kt
+    // For facenet
+    private val embeddingDim = 128
+    
+    // For facenet-512
+    private val embeddingDim = 512
+    ```
+  </Step>
+  
+  <Step title="Update the database schema">
+    In `app/src/main/java/com/ml/shubham0204/facenet_android/data/DataModels.kt`, update the `@HnswIndex` annotation:
+    
+    ```kotlin DataModels.kt
+    @Entity
+    data class FaceImageRecord(
+        @Id var recordID: Long = 0,
+        @Index var personID: Long = 0,
+        var personName: String = "",
+        // Update dimensions to match your model
+        @HnswIndex(dimensions = 512) // or 128
+        var faceEmbedding: FloatArray = floatArrayOf()
+    )
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The 512-dimensional model generally provides better accuracy but requires more computation and storage.
+</Note>
+
+## Model sources
+
+Both FaceNet models are sourced from the [deepface](https://github.com/serengil/deepface) library and converted to TFLite format:
+
+```python
+from deepface import DeepFace
+from deepface.models.facial_recognition.Facenet import scaling
+import tensorflow as tf
+
+model = DeepFace.build_model("Facenet512")
+model.model.save("facenet512.keras")
+
+model = tf.keras.models.load_model("facenet512.keras", custom_objects={
+    "scaling": scaling
+})
+converter_fp16 = tf.lite.TFLiteConverter.from_keras_model(model)
+converter_fp16.optimizations = [tf.lite.Optimize.DEFAULT]
+converter_fp16.target_spec.supported_types = [tf.float16]
+tflite_model_fp16 = converter_fp16.convert()
+
+with open("facenet_512.tflite", "wb") as file:
+    file.write(tflite_model_fp16)
+```
+
+## Choosing the face detector
+
+The app supports two face detection backends:
+
+- **MLKit**: Google's MLKit Face Detection API
+- **Mediapipe**: Google's Mediapipe Face Detection solution
+
+### Switching face detectors
+
+<Steps>
+  <Step title="Open AppModule.kt">
+    Navigate to `app/src/main/java/com/ml/shubham0204/facenet_android/di/AppModule.kt`
+  </Step>
+  
+  <Step title="Toggle the detector">
+    Set the `isMLKit` variable:
+    
+    ```kotlin AppModule.kt
+    @Module
+    @ComponentScan("com.ml.shubham0204.facenet_android")
+    class AppModule {
+
+        // Set to true for MLKit, false for Mediapipe
+        private var isMLKit = true
+
+        @Single
+        fun provideFaceDetector(context: Context): BaseFaceDetector = if (isMLKit) {
+            MLKitFaceDetector(context)
+        } else {
+            MediapipeFaceDetector(context)
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Both detectors work well, but you may find one performs better in specific lighting conditions or with certain face angles.
+</Tip>
+
+## Configuring vector search
+
+ObjectBox provides two search modes for finding nearest neighbors:
+
+### HNSW search (default)
+
+- **Type**: Approximate Nearest Neighbor (ANN)
+- **Performance**: Fast, especially for large datasets
+- **Accuracy**: Approximate results, may not always return the true nearest neighbor
+- **Best for**: Datasets with many face embeddings (50+ people)
+
+### Flat search (precise)
+
+- **Type**: Exact Nearest Neighbor
+- **Performance**: Slower, performs linear search across all records
+- **Accuracy**: Precise, always returns the true nearest neighbor
+- **Best for**: Small datasets or when accuracy is critical
+
+### Enabling flat search
+
+<Steps>
+  <Step title="Open FaceDetectionOverlay.kt">
+    Navigate to `app/src/main/java/com/ml/shubham0204/facenet_android/presentation/components/FaceDetectionOverlay.kt`
+  </Step>
+  
+  <Step title="Enable flat search">
+    Set the `flatSearch` variable to `true`:
+    
+    ```kotlin FaceDetectionOverlay.kt
+    @SuppressLint("ViewConstructor")
+    @ExperimentalGetImage
+    class FaceDetectionOverlay(
+        private val lifecycleOwner: LifecycleOwner,
+        private val context: Context,
+        private val viewModel: DetectScreenViewModel,
+    ) : FrameLayout(context) {
+        
+        // Setting `flatSearch` to `true` enables precise calculation
+        // of cosine similarity.
+        // This is slower than ObjectBox's vector search, which approximates
+        // nearest neighbor search
+        private val flatSearch: Boolean = true // Change to true
+        
+        // ...
+    }
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Flat search uses 4 parallel coroutines to speed up the linear scan, but it will still be slower than HNSW for large datasets.
+</Warning>
+
+## Performance optimization
+
+The FaceNet model uses several optimizations:
+
+### GPU acceleration
+
+GPU delegation is enabled by default for faster inference:
+
+```kotlin FaceNet.kt
+val interpreterOptions = Interpreter.Options().apply {
+    if (useGpu) {
+        if (CompatibilityList().isDelegateSupportedOnThisDevice) {
+            addDelegate(GpuDelegate(CompatibilityList().bestOptionsForThisDevice))
+        }
+    } else {
+        numThreads = 4
+    }
+    useXNNPACK = useXNNPack
+    useNNAPI = true
+}
+```
+
+### XNNPACK
+
+XNNPACK is a highly optimized library for neural network inference on mobile devices. It's enabled by default.
+
+### NNAPI
+
+Android's Neural Networks API (NNAPI) is also enabled for hardware acceleration when available.
+
+## Choosing configuration options
+
+| Use case | Recommended configuration |
+|----------|---------------------------|
+| High accuracy, small dataset (< 50 people) | FaceNet-512 + Flat search |
+| Balanced accuracy and speed | FaceNet-512 + HNSW search |
+| Maximum speed, large dataset (100+ people) | FaceNet-128 + HNSW search |
+| Low-end devices | FaceNet-128 + HNSW search + GPU disabled |
+| Security-critical applications | FaceNet-512 + Flat search + Spoof detection |
+
+## Runtime configuration
+
+Currently, configuration changes require modifying the source code and rebuilding the app. Future versions may support runtime configuration through a settings UI.
+
+## Next steps
+
+Now that you understand the configuration options:
+
+- [Add faces to build your database](/guides/adding-faces)
+- [Start recognizing faces in real-time](/guides/recognizing-faces)

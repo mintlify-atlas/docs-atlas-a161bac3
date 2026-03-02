@@ -1,0 +1,329 @@
+---
+title: Face detection
+description: How FaceNet Android detects and crops faces using MLKit and Mediapipe
+---
+
+Face detection is the first critical step in the recognition pipeline. FaceNet Android supports two detection frameworks: Google MLKit and Mediapipe. This page explains how both work and when to use each.
+
+## Detection overview
+
+The face detector's job is to:
+
+1. Locate all faces in an image or video frame
+2. Return bounding box coordinates for each face
+3. Crop faces to prepare them for embedding generation
+
+## Detector architecture
+
+Both detectors inherit from a common base class:
+
+```kotlin
+abstract class BaseFaceDetector {
+    // Detect single face from image URI (for enrollment)
+    abstract suspend fun getCroppedFace(imageUri: Uri): Result<Bitmap>
+    
+    // Detect multiple faces from frame (for recognition)
+    abstract suspend fun getAllCroppedFaces(frameBitmap: Bitmap): List<Pair<Bitmap, Rect>>
+}
+```
+
+### Key methods
+
+**`getCroppedFace(imageUri: Uri)`**
+
+Used during enrollment when users select images:
+
+- Expects exactly one face in the image
+- Returns `Result.failure` if zero or multiple faces detected
+- Uses high-accuracy mode for better detection quality
+- Handles EXIF orientation correction
+
+**`getAllCroppedFaces(frameBitmap: Bitmap)`**
+
+Used during real-time recognition:
+
+- Detects all faces in the frame
+- Returns list of cropped face bitmaps with bounding boxes
+- Uses fast mode for real-time performance
+- Filters out invalid bounding boxes
+
+## MLKit face detector
+
+Google MLKit provides on-device face detection with two performance modes.
+
+### Implementation
+
+```kotlin
+class MLKitFaceDetector(private val context: Context) : BaseFaceDetector() {
+    
+    private val realTimeOpts = FaceDetectorOptions.Builder()
+        .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+        .build()
+    private val realTimeFaceDetector = FaceDetection.getClient(realTimeOpts)
+
+    private val highAccuracyOpts = FaceDetectorOptions.Builder()
+        .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+        .build()
+    private val highAccuracyFaceDetector = FaceDetection.getClient(highAccuracyOpts)
+    
+    // Implementation...
+}
+```
+
+### Performance modes
+
+| Mode | Use Case | Latency | Accuracy |
+|------|----------|---------|----------|
+| `PERFORMANCE_MODE_FAST` | Real-time camera frames | ~20-30ms | Good |
+| `PERFORMANCE_MODE_ACCURATE` | Enrollment from gallery | ~40-60ms | Better |
+
+### Detection process
+
+1. Create `InputImage` from Bitmap or URI
+2. Process with appropriate detector
+3. Wait for async result using `Tasks.await()`
+4. Extract bounding boxes from detected faces
+5. Validate and crop each face
+
+### Example usage
+
+```kotlin
+override suspend fun getAllCroppedFaces(frameBitmap: Bitmap): List<Pair<Bitmap, Rect>> =
+    withContext(Dispatchers.IO) {
+        return@withContext Tasks.await(
+            realTimeFaceDetector.process(InputImage.fromBitmap(frameBitmap, 0))
+        )
+            .filter { validateRect(frameBitmap, it.boundingBox) }
+            .map { detection -> detection.boundingBox }
+            .map { rect ->
+                val croppedBitmap = Bitmap.createBitmap(
+                    frameBitmap,
+                    rect.left,
+                    rect.top,
+                    rect.width(),
+                    rect.height(),
+                )
+                Pair(croppedBitmap, rect)
+            }
+    }
+```
+
+### Advantages
+
+- Well-integrated with Android ecosystem
+- Handles various lighting conditions effectively
+- Supports additional features (landmarks, contours, classification)
+- Regular updates from Google
+
+### Limitations
+
+- Larger library size (~4-5 MB)
+- Requires Google Play Services on some devices
+- May have latency variations across devices
+
+## Mediapipe face detector
+
+Mediapipe uses the BlazeFace model for lightweight, efficient detection.
+
+### Implementation
+
+```kotlin
+class MediapipeFaceDetector(private val context: Context) : BaseFaceDetector() {
+    
+    private val modelName = "blaze_face_short_range.tflite"
+    private val baseOptions = BaseOptions.builder()
+        .setModelAssetPath(modelName)
+        .build()
+    
+    private val faceDetectorOptions = FaceDetector.FaceDetectorOptions.builder()
+        .setBaseOptions(baseOptions)
+        .setRunningMode(RunningMode.IMAGE)
+        .build()
+    
+    private val faceDetector = FaceDetector.createFromOptions(context, faceDetectorOptions)
+    
+    // Implementation...
+}
+```
+
+### BlazeFace model
+
+The app uses the **short-range** variant optimized for faces within 2 meters:
+
+- Model size: ~100 KB (very lightweight)
+- Input: Any resolution (automatically scaled)
+- Architecture: MobileNet-based with special anchors
+- Designed for mobile devices
+
+<Info>
+Mediapipe also offers a full-range model for faces further from the camera, but the short-range model is better for typical face recognition scenarios.
+</Info>
+
+### Detection process
+
+1. Create `BitmapImageBuilder` from Bitmap
+2. Run synchronous detection
+3. Extract detections and bounding boxes
+4. Convert Mediapipe `RectF` to Android `Rect`
+5. Validate and crop faces
+
+### Example usage
+
+```kotlin
+override suspend fun getAllCroppedFaces(frameBitmap: Bitmap): List<Pair<Bitmap, Rect>> =
+    withContext(Dispatchers.IO) {
+        return@withContext faceDetector
+            .detect(BitmapImageBuilder(frameBitmap).build())
+            .detections()
+            .filter { validateRect(frameBitmap, it.boundingBox().toRect()) }
+            .map { detection -> detection.boundingBox().toRect() }
+            .map { rect ->
+                val croppedBitmap = Bitmap.createBitmap(
+                    frameBitmap,
+                    rect.left,
+                    rect.top,
+                    rect.width(),
+                    rect.height(),
+                )
+                Pair(croppedBitmap, rect)
+            }
+    }
+```
+
+### Advantages
+
+- Very small model size (~100 KB)
+- Consistent performance across devices
+- Fast inference (typically &lt;20ms)
+- No dependency on Google Play Services
+- Fully deterministic (same input → same output)
+
+### Limitations
+
+- Fewer configuration options
+- No facial landmarks or classification
+- Optimized for frontal faces
+
+## Choosing a detector
+
+### Use MLKit when:
+
+- You need additional face features (landmarks, smile detection)
+- Device has Google Play Services
+- Varying lighting conditions are common
+- App size is not critical
+
+### Use Mediapipe when:
+
+- Minimizing app size is important
+- You want consistent cross-device behavior
+- Pure face detection is sufficient
+- Targeting devices without Play Services
+
+## Configuration
+
+Switch between detectors in `AppModule.kt`:
+
+```kotlin
+@Module
+@ComponentScan("com.ml.shubham0204.facenet_android")
+class AppModule {
+    
+    private var isMLKit = true  // Set to false for Mediapipe
+
+    @Single
+    fun provideFaceDetector(context: Context): BaseFaceDetector = if (isMLKit) {
+        MLKitFaceDetector(context)
+    } else {
+        MediapipeFaceDetector(context)
+    }
+}
+```
+
+<Warning>
+Changing the detector requires rebuilding the app. The choice cannot be changed at runtime.
+</Warning>
+
+## Bounding box validation
+
+Both detectors validate bounding boxes before cropping:
+
+```kotlin
+protected fun validateRect(
+    cameraFrameBitmap: Bitmap,
+    boundingBox: Rect,
+): Boolean =
+    boundingBox.left >= 0 &&
+    boundingBox.top >= 0 &&
+    (boundingBox.left + boundingBox.width()) < cameraFrameBitmap.width &&
+    (boundingBox.top + boundingBox.height()) < cameraFrameBitmap.height
+```
+
+This prevents crashes from invalid crop operations when:
+
+- Face is partially outside frame
+- Detection returns negative coordinates
+- Bounding box extends beyond image boundaries
+
+<Tip>
+Invalid detections are silently filtered out rather than causing errors, ensuring smooth real-time operation.
+</Tip>
+
+## EXIF orientation handling
+
+When loading images from gallery, the detector automatically corrects orientation:
+
+```kotlin
+protected fun getBitmapFromUri(context: Context, imageUri: Uri): Bitmap? {
+    var imageInputStream = context.contentResolver.openInputStream(imageUri) ?: return null
+    var imageBitmap = BitmapFactory.decodeStream(imageInputStream)
+    imageInputStream.close()
+
+    imageInputStream = context.contentResolver.openInputStream(imageUri) ?: return null
+    val exifInterface = ExifInterface(imageInputStream)
+    imageBitmap = when (
+        exifInterface.getAttributeInt(
+            ExifInterface.TAG_ORIENTATION,
+            ExifInterface.ORIENTATION_UNDEFINED,
+        )
+    ) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> rotateBitmap(imageBitmap, 90f)
+        ExifInterface.ORIENTATION_ROTATE_180 -> rotateBitmap(imageBitmap, 180f)
+        ExifInterface.ORIENTATION_ROTATE_270 -> rotateBitmap(imageBitmap, 270f)
+        else -> imageBitmap
+    }
+    imageInputStream.close()
+    return imageBitmap
+}
+```
+
+This ensures faces are detected correctly regardless of how the image was captured or stored.
+
+## Error handling
+
+Detectors return typed errors for different scenarios:
+
+```kotlin
+if (faces.size > 1) {
+    return Result.failure(AppException(ErrorCode.MULTIPLE_FACES))
+} else if (faces.isEmpty()) {
+    return Result.failure(AppException(ErrorCode.NO_FACE))
+} else if (!validateRect(imageBitmap, rect)) {
+    return Result.failure(AppException(ErrorCode.FACE_DETECTOR_FAILURE))
+}
+```
+
+These errors help the UI provide specific feedback to users during enrollment.
+
+## Performance optimization
+
+Both implementations use coroutines with `Dispatchers.IO` for detection:
+
+```kotlin
+suspend fun getCroppedFace(imageUri: Uri): Result<Bitmap> =
+    withContext(Dispatchers.IO) {
+        // Detection work...
+    }
+```
+
+This ensures face detection doesn't block the main thread or UI rendering.

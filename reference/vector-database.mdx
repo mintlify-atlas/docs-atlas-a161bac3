@@ -1,0 +1,181 @@
+---
+title: Vector database
+description: Store and search face embeddings using ObjectBox vector database
+---
+
+The `ImagesVectorDB` class provides vector database operations for storing and searching face embeddings using ObjectBox with HNSW (Hierarchical Navigable Small World) indexing.
+
+## Constructor
+
+The class is annotated with `@Single` and managed by Koin dependency injection.
+
+```kotlin
+ImagesVectorDB()
+```
+
+Uses ObjectBox store to manage `FaceImageRecord` entities with vector search capabilities.
+
+## Methods
+
+### addFaceImageRecord
+
+Adds a new face embedding record to the database.
+
+```kotlin
+fun addFaceImageRecord(record: FaceImageRecord)
+```
+
+<ParamField path="record" type="FaceImageRecord" required>
+  Face image record containing person ID, name, and 512-dimensional embedding vector
+</ParamField>
+
+### getNearestEmbeddingPersonName
+
+Finds the most similar face embedding in the database using either ANN (Approximate Nearest Neighbor) or linear search.
+
+```kotlin
+fun getNearestEmbeddingPersonName(
+    embedding: FloatArray,
+    flatSearch: Boolean
+): FaceImageRecord?
+```
+
+<ParamField path="embedding" type="FloatArray" required>
+  Query embedding vector (512 dimensions) to search for
+</ParamField>
+
+<ParamField path="flatSearch" type="Boolean" required>
+  - `true`: Use linear search for precise results (slower, exhaustive search)
+  - `false`: Use ObjectBox HNSW index for approximate results (faster)
+</ParamField>
+
+<ResponseField name="return" type="FaceImageRecord?">
+  The face record with the highest cosine similarity, or null if no records exist
+</ResponseField>
+
+### removeFaceRecordsWithPersonID
+
+Deletes all face embeddings associated with a specific person.
+
+```kotlin
+fun removeFaceRecordsWithPersonID(personID: Long)
+```
+
+<ParamField path="personID" type="Long" required>
+  Person ID to remove all face records for
+</ParamField>
+
+## Search algorithms
+
+### HNSW approximate search
+
+When `flatSearch = false`, uses ObjectBox's HNSW index for fast approximate nearest neighbor search.
+
+```kotlin
+imagesBox
+    .query(FaceImageRecord_.faceEmbedding.nearestNeighbors(embedding, 10))
+    .build()
+    .findWithScores()
+    .map { it.get() }
+    .firstOrNull()
+```
+
+<ResponseField name="maxResultCount" type="Int" default="10">
+  Maximum number of candidates to retrieve. Also serves as the "ef" HNSW parameter for search quality. Higher values improve quality at the cost of performance
+</ResponseField>
+
+<ResponseField name="distanceType" type="VectorDistanceType" default="COSINE">
+  Uses cosine distance for similarity measurement, configured in `FaceImageRecord`
+</ResponseField>
+
+### Linear flat search
+
+When `flatSearch = true`, performs exhaustive linear search across all records with parallel processing.
+
+<ResponseField name="numThreads" type="Int" default="4">
+  Number of parallel threads for batch processing
+</ResponseField>
+
+<ResponseField name="algorithm" type="String">
+  Splits all records into batches, processes in parallel using coroutines on `Dispatchers.Default`, then returns the record with maximum cosine similarity
+</ResponseField>
+
+## Cosine distance calculation
+
+Calculates cosine similarity between two embedding vectors:
+
+```kotlin
+private fun cosineDistance(x1: FloatArray, x2: FloatArray): Float {
+    var mag1 = 0.0f
+    var mag2 = 0.0f
+    var product = 0.0f
+    for (i in x1.indices) {
+        mag1 += x1[i] * x1[i]
+        mag2 += x2[i] * x2[i]
+        product += x1[i] * x2[i]
+    }
+    mag1 = sqrt(mag1)
+    mag2 = sqrt(mag2)
+    return product / (mag1 * mag2)
+}
+```
+
+Returns a value between -1 and 1, where:
+- 1 = identical vectors
+- 0 = orthogonal vectors
+- -1 = opposite vectors
+
+## Usage example
+
+```kotlin
+// Add a new face to the database
+val embedding = faceNet.getFaceEmbedding(croppedFaceBitmap)
+imagesVectorDB.addFaceImageRecord(
+    FaceImageRecord(
+        personID = personID,
+        personName = "John Doe",
+        faceEmbedding = embedding
+    )
+)
+
+// Search for similar face using HNSW (fast)
+val queryEmbedding = faceNet.getFaceEmbedding(unknownFace)
+val result = imagesVectorDB.getNearestEmbeddingPersonName(
+    embedding = queryEmbedding,
+    flatSearch = false
+)
+
+if (result != null) {
+    val distance = cosineDistance(queryEmbedding, result.faceEmbedding)
+    if (distance > 0.3) {
+        println("Recognized: ${result.personName}")
+    } else {
+        println("Not recognized")
+    }
+}
+
+// Search using linear search (precise)
+val preciseResult = imagesVectorDB.getNearestEmbeddingPersonName(
+    embedding = queryEmbedding,
+    flatSearch = true
+)
+
+// Delete all faces for a person
+imagesVectorDB.removeFaceRecordsWithPersonID(personID)
+```
+
+## Performance considerations
+
+### HNSW search (flatSearch = false)
+- Faster: O(log n) average case
+- Approximate results
+- Suitable for real-time recognition
+- Quality can be tuned with maxResultCount parameter
+
+### Linear search (flatSearch = true)
+- Slower: O(n) complexity
+- Exact results
+- Uses parallel processing with 4 threads
+- Better for smaller databases or when precision is critical
+
+Source: `data/ImagesVectorDB.kt:10`

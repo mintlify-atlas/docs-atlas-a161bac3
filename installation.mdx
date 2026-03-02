@@ -1,0 +1,410 @@
+---
+title: Installation
+description: Detailed setup and configuration instructions for FaceNet Android
+---
+
+## Prerequisites
+
+Before building FaceNet Android from source, ensure you have:
+
+<CardGroup cols={2}>
+  <Card title="Android Studio" icon="android">
+    **Android Studio Hedgehog (2023.1.1) or newer**
+    
+    Download from [developer.android.com](https://developer.android.com/studio)
+  </Card>
+  <Card title="Android SDK" icon="mobile">
+    **Android SDK with API level 26+ (Android 8.0)**
+    
+    Minimum SDK: 26
+    
+    Target SDK: 34
+  </Card>
+  <Card title="JDK" icon="java">
+    **Java Development Kit 8 or higher**
+    
+    Usually bundled with Android Studio
+  </Card>
+  <Card title="Git" icon="git">
+    **Git version control**
+    
+    For cloning the repository
+  </Card>
+</CardGroup>
+
+## Download options
+
+### Option 1: Download pre-built APK
+
+The simplest way to install FaceNet Android is to download the APK:
+
+1. Visit the [GitHub Releases page](https://github.com/shubham0204/OnDevice-Face-Recognition-Android/releases)
+2. Download the latest `app-release.apk` file
+3. Transfer it to your Android device
+4. Enable installation from unknown sources in your device settings
+5. Tap the APK file to install
+
+<Warning>
+The APK is signed with a release keystore. You may see a warning from Google Play Protect since it's not distributed through the Play Store.
+</Warning>
+
+### Option 2: Build from source
+
+For developers who want to modify the app or understand its internals:
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone --depth=1 https://github.com/shubham0204/OnDevice-Face-Recognition-Android
+    cd OnDevice-Face-Recognition-Android
+    ```
+    
+    The `--depth=1` flag creates a shallow clone to save bandwidth.
+  </Step>
+  <Step title="Open in Android Studio">
+    1. Launch Android Studio
+    2. Select **File > Open**
+    3. Navigate to the cloned directory and click **OK**
+  </Step>
+  <Step title="Wait for Gradle sync">
+    Android Studio will automatically:
+    - Download Gradle dependencies
+    - Download TensorFlow Lite libraries
+    - Download ObjectBox plugins
+    - Configure the build system
+    
+    This may take several minutes on the first run.
+  </Step>
+  <Step title="Build and run">
+    1. Connect an Android device via USB (with USB debugging enabled) or start an emulator
+    2. Click the **Run** button (green play icon) or press `Shift + F10`
+    3. Select your device from the deployment target dialog
+    
+    The app will compile and install automatically.
+  </Step>
+</Steps>
+
+## Configuration
+
+FaceNet Android offers several configuration options to optimize performance and accuracy.
+
+### Choosing the FaceNet model
+
+The app includes two FaceNet models with different embedding dimensions:
+
+- **facenet.tflite**: 128-dimensional embeddings (smaller, faster)
+- **facenet_512.tflite**: 512-dimensional embeddings (more accurate, default)
+
+To switch models:
+
+<Steps>
+  <Step title="Edit FaceNet.kt">
+    Open `app/src/main/java/com/ml/shubham0204/facenet_android/domain/embeddings/FaceNet.kt`
+  </Step>
+  <Step title="Change the model path">
+    Modify line 62 to load your preferred model:
+    
+    ```kotlin
+    // For 128-dimensional embeddings
+    interpreter = Interpreter(
+        FileUtil.loadMappedFile(context, "facenet.tflite"),
+        interpreterOptions
+    )
+    
+    // For 512-dimensional embeddings (default)
+    interpreter = Interpreter(
+        FileUtil.loadMappedFile(context, "facenet_512.tflite"),
+        interpreterOptions
+    )
+    ```
+  </Step>
+  <Step title="Update embedding dimensions">
+    Change the `embeddingDim` value at line 34:
+    
+    ```kotlin
+    // For facenet.tflite
+    private val embeddingDim = 128
+    
+    // For facenet_512.tflite
+    private val embeddingDim = 512
+    ```
+  </Step>
+  <Step title="Update the database schema">
+    Open `app/src/main/java/com/ml/shubham0204/facenet_android/data/DataModels.kt` and modify the `@HnswIndex` dimensions:
+    
+    ```kotlin
+    @Entity
+    data class FaceImageRecord(
+        @Id var recordID: Long = 0,
+        @Index var personID: Long = 0,
+        var personName: String = "",
+        // Change dimensions to match your model
+        @HnswIndex(dimensions = 128)  // or 512
+        var faceEmbedding: FloatArray = floatArrayOf(),
+    )
+    ```
+  </Step>
+  <Step title="Clean and rebuild">
+    In Android Studio, select **Build > Clean Project**, then **Build > Rebuild Project** to regenerate the ObjectBox schema.
+  </Step>
+</Steps>
+
+<Warning>
+Changing the embedding dimension requires clearing the app data or uninstalling and reinstalling to reset the database schema.
+</Warning>
+
+### Enable flat index search (precise NN search)
+
+By default, ObjectBox uses HNSW (Hierarchical Navigable Small World) for approximate nearest-neighbor search. This is fast but may miss the true nearest neighbor, especially with larger datasets.
+
+To enable precise flat search:
+
+<Steps>
+  <Step title="Edit FaceDetectionOverlay.kt">
+    Open `app/src/main/java/com/ml/shubham0204/facenet_android/presentation/components/FaceDetectionOverlay.kt`
+  </Step>
+  <Step title="Set flatSearch to true">
+    Modify line 44:
+    
+    ```kotlin
+    private val flatSearch: Boolean = true  // Changed from false
+    ```
+  </Step>
+  <Step title="Rebuild and run">
+    The app will now compute exact cosine similarity for all database entries.
+  </Step>
+</Steps>
+
+<Info>
+Flat search triggers a linear scan across all records, which is slower but guarantees finding the true nearest neighbor. The implementation uses 4 parallel coroutines to speed up the search.
+</Info>
+
+**Performance comparison:**
+
+| Search method | Speed | Accuracy | Best for |
+|--------------|-------|----------|----------|
+| HNSW (default) | Fast | ~95% accurate | Large databases (&gt;1000 faces) |
+| Flat search | Slower | 100% accurate | Small databases (&lt;500 faces) |
+
+### Choose face detection method
+
+FaceNet Android supports two face detection backends:
+
+- **MLKit** (default): Google's optimized face detection for Android
+- **Mediapipe**: Cross-platform face detection using BlazeFace
+
+To switch between them:
+
+<Steps>
+  <Step title="Edit AppModule.kt">
+    Open `app/src/main/java/com/ml/shubham0204/facenet_android/di/AppModule.kt`
+  </Step>
+  <Step title="Change the isMLKit flag">
+    Modify line 15:
+    
+    ```kotlin
+    // For MLKit (default)
+    private var isMLKit = true
+    
+    // For Mediapipe
+    private var isMLKit = false
+    ```
+  </Step>
+  <Step title="Rebuild and run">
+    The app will use the selected face detector for all operations.
+  </Step>
+</Steps>
+
+**Comparison:**
+
+| Detector | Performance | Accuracy | Model size |
+|----------|------------|----------|------------|
+| MLKit | Fast | High | Included in Google Play Services |
+| Mediapipe | Moderate | High | BlazeFace short-range model (~1MB) |
+
+### Adjust recognition threshold
+
+The cosine similarity threshold determines how strict face matching is. The default threshold is 0.3.
+
+To modify it:
+
+1. Open `app/src/main/java/com/ml/shubham0204/facenet_android/domain/ImageVectorUseCase.kt`
+2. Find line 93 and change the threshold value:
+
+```kotlin
+if (distance > 0.4) {  // Increased from 0.3 for stricter matching
+    faceRecognitionResults.add(
+        FaceRecognitionResult(recognitionResult.personName, boundingBox, spoofResult),
+    )
+}
+```
+
+**Threshold guide:**
+
+- **< 0.3**: Very strict, may reject valid matches (low false positives)
+- **0.3 - 0.4**: Balanced (recommended)
+- **> 0.4**: Lenient, may accept invalid matches (high false positives)
+
+## Build configuration
+
+Key build settings from `app/build.gradle.kts`:
+
+```kotlin
+android {
+    namespace = "com.ml.shubham0204.facenet_android"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.ml.shubham0204.facenet_android"
+        minSdk = 26  // Android 8.0
+        targetSdk = 34
+        versionCode = 1
+        versionName = "0.0.1"
+    }
+}
+```
+
+### Key dependencies
+
+The app uses these major libraries:
+
+```kotlin
+// TensorFlow Lite for model inference
+implementation("org.tensorflow.lite:tensorflow-lite:2.x.x")
+implementation("org.tensorflow.lite:tensorflow-lite-gpu:2.x.x")
+
+// ObjectBox for vector database
+implementation("io.objectbox:objectbox-android:4.0.0")
+
+// MLKit for face detection
+implementation("com.google.mlkit:face-detection:16.1.7")
+
+// Mediapipe for face detection
+implementation("com.google.mediapipe:tasks-vision:0.x.x")
+
+// CameraX for camera access
+implementation("androidx.camera:camera-camera2:1.x.x")
+implementation("androidx.camera:camera-lifecycle:1.x.x")
+
+// Koin for dependency injection
+implementation("io.insert-koin:koin-android:3.x.x")
+```
+
+## GPU acceleration
+
+FaceNet inference can be accelerated using GPU delegates:
+
+From `FaceNet.kt:48-59`:
+```kotlin
+val interpreterOptions = Interpreter.Options().apply {
+    if (useGpu) {
+        if (CompatibilityList().isDelegateSupportedOnThisDevice) {
+            addDelegate(GpuDelegate(CompatibilityList().bestOptionsForThisDevice))
+        }
+    } else {
+        numThreads = 4  // CPU threads
+    }
+    useXNNPACK = useXNNPack  // XNNPACK acceleration
+    useNNAPI = true  // Android Neural Networks API
+}
+```
+
+GPU acceleration is enabled by default. To force CPU inference, modify `FaceNet.kt:27`:
+
+```kotlin
+class FaceNet(
+    context: Context,
+    useGpu: Boolean = false,  // Changed from true
+    useXNNPack: Boolean = true,
+)
+```
+
+## TFLite model sources
+
+### FaceNet models
+
+Both `facenet.tflite` and `facenet_512.tflite` are converted from the [deepface](https://github.com/serengil/deepface) library using this Python script:
+
+```python
+from deepface import DeepFace
+from deepface.models.facial_recognition.Facenet import scaling
+import tensorflow as tf
+
+model = DeepFace.build_model("Facenet512")
+model.model.save("facenet512.keras")
+
+model = tf.keras.models.load_model("facenet512.keras", custom_objects={
+    "scaling": scaling
+})
+converter_fp16 = tf.lite.TFLiteConverter.from_keras_model(model)
+converter_fp16.optimizations = [tf.lite.Optimize.DEFAULT]
+converter_fp16.target_spec.supported_types = [tf.float16]
+tflite_model_fp16 = converter_fp16.convert()
+
+with open("facenet_512.tflite", "wb") as file:
+    file.write(tflite_model_fp16)
+```
+
+### Anti-spoofing models
+
+The `spoof_model_scale` TFLite models are converted from PyTorch weights in [Silent-Face-Anti-Spoofing](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing) via ONNX.
+
+Conversion notebook: [Liveness_PT_Model_to_TF.ipynb](https://github.com/shubham0204/OnDevice-Face-Recognition-Android/blob/main/resources/Liveness_PT_Model_to_TF.ipynb)
+
+### BlazeFace model
+
+The `blaze_face_short_range` model is from Mediapipe's [Face Detector](https://ai.google.dev/edge/mediapipe/solutions/vision/face_detector#blazeface_short-range) solution.
+
+## Troubleshooting
+
+### Gradle sync fails
+
+**Problem**: "Could not resolve all dependencies"
+
+**Solution**: Ensure you have a stable internet connection and try:
+```bash
+./gradlew clean
+./gradlew build --refresh-dependencies
+```
+
+### ObjectBox build errors
+
+**Problem**: "ObjectBox annotation processor failed"
+
+**Solution**: Clean and rebuild the project:
+1. **Build > Clean Project**
+2. **Build > Rebuild Project**
+3. If the error persists, delete the `app/build` folder and rebuild
+
+### App crashes on startup
+
+**Problem**: "Failed to load model"
+
+**Solution**: Verify that TFLite model files exist in `app/src/main/assets/`:
+- `facenet.tflite`
+- `facenet_512.tflite`
+- `spoof_model_scale_1.tflite`
+- `spoof_model_scale_2.tflite`
+- `blaze_face_short_range.tflite` (if using Mediapipe)
+
+### Poor recognition accuracy
+
+**Problem**: Faces not being recognized correctly
+
+**Solutions**:
+1. Add more images per person (5-10 recommended)
+2. Use well-lit, frontal face photos
+3. Enable flat search for precise matching
+4. Adjust the cosine similarity threshold
+5. Switch to the 512-dimensional model for better accuracy
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quick start guide" icon="rocket" href="/quickstart">
+    Learn how to use the app for face recognition
+  </Card>
+  <Card title="Architecture overview" icon="sitemap" href="/introduction#technical-architecture">
+    Understand the technical implementation
+  </Card>
+</CardGroup>

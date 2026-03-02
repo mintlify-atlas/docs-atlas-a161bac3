@@ -1,0 +1,44 @@
+---
+title: Setup
+description: Get started with FaceNet Android by configuring the app for your needs
+---
+
+FaceNet Android is an on-device face recognition app that performs face recognition by comparing FaceNet embeddings against a vector database. This guide will help you set up and configure the app.
+
+## Installation
+
+Download the latest APK from the [GitHub Releases](https://github.com/shubham0204/OnDevice-Face-Recognition-Android/releases) page.
+
+Alternatively, you can build the app from source:
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone --depth=1 https://github.com/shubham0204/OnDevice-Face-Recognition-Android
+    ```
+  </Step>
+  
+  <Step title="Open in Android Studio">
+    Open the project in Android Studio and perform a Gradle sync.
+  </Step>
+  
+  <Step title="Run the app">
+    Connect your Android device or start an emulator, then run the application.
+  </Step>
+</Steps>
+
+## Permissions
+
+When you first launch the app, you'll need to grant camera permissions. The app cannot function without camera access as it performs real-time face recognition on the camera feed.
+
+<Warning>
+  Camera permissions are required for the app to work. Without them, face recognition cannot be performed.
+</Warning>
+
+## Next steps
+
+Once you've installed the app and granted permissions:
+
+1. [Add faces to the database](/guides/adding-faces) to create your recognition dataset
+2. [Start recognizing faces](/guides/recognizing-faces) in real-time using the camera
+3. [Configure advanced options](/guides/configuration) to optimize performance

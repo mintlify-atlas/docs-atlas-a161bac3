@@ -1,0 +1,237 @@
+---
+title: Face spoof detection
+description: Detect presentation attacks using anti-spoofing models
+---
+
+FaceNet Android includes face anti-spoofing (liveness detection) to identify when someone attempts to fool the system with a photo, video, or 3D model instead of a real face.
+
+## How it works
+
+The spoof detector uses MiniFASNet models from [Silent-Face-Anti-Spoofing](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing). It analyzes the face at two different scales to detect presentation attacks:
+
+1. Crops the detected face at 2.7x scale → Model 1
+2. Crops the same face at 4.0x scale → Model 2
+3. Combines predictions using softmax averaging
+4. Returns spoof/real classification and confidence score
+
+The multi-scale approach helps detect:
+- Printed photos
+- Digital screens (phones, tablets)
+- Video replays
+- 3D masks (with reduced accuracy)
+
+<Tip>
+The models work by analyzing texture patterns and Fourier transform features that differ between real faces and presentation attacks.
+</Tip>
+
+## Implementation
+
+The spoof detector is implemented in `FaceSpoofDetector.kt:36-89` as a singleton:
+
+```kotlin FaceSpoofDetector.kt
+@Single
+class FaceSpoofDetector(
+    context: Context,
+    useGpu: Boolean = false,
+    useXNNPack: Boolean = false,
+    useNNAPI: Boolean = false,
+) {
+    data class FaceSpoofResult(
+        val isSpoof: Boolean,
+        val score: Float,
+        val timeMillis: Long,
+    )
+
+    private val scale1 = 2.7f
+    private val scale2 = 4.0f
+    private val inputImageDim = 80
+    private val outputDim = 3
+
+    private var firstModelInterpreter: Interpreter
+    private var secondModelInterpreter: Interpreter
+    
+    init {
+        val interpreterOptions = Interpreter.Options().apply {
+            if (useGpu) {
+                if (CompatibilityList().isDelegateSupportedOnThisDevice) {
+                    addDelegate(GpuDelegate(CompatibilityList().bestOptionsForThisDevice))
+                }
+            } else {
+                numThreads = 4
+            }
+            useXNNPACK = useXNNPack
+            this.useNNAPI = useNNAPI
+        }
+        firstModelInterpreter = Interpreter(
+            FileUtil.loadMappedFile(context, "spoof_model_scale_2_7.tflite"),
+            interpreterOptions,
+        )
+        secondModelInterpreter = Interpreter(
+            FileUtil.loadMappedFile(context, "spoof_model_scale_4_0.tflite"),
+            interpreterOptions,
+        )
+    }
+}
+```
+
+## Using the detector
+
+The detector processes face bounding boxes from the camera frame:
+
+```kotlin FaceSpoofDetector.kt
+suspend fun detectSpoof(
+    frameImage: Bitmap,
+    faceRect: Rect,
+): FaceSpoofResult
+```
+
+### Example usage
+
+```kotlin
+val spoofDetector = get<FaceSpoofDetector>()
+val result = spoofDetector.detectSpoof(
+    frameImage = cameraBitmap,
+    faceRect = detectedFaceRect
+)
+
+if (result.isSpoof) {
+    println("Spoof detected! Score: ${result.score}")
+    println("Detection took ${result.timeMillis}ms")
+} else {
+    println("Real face detected. Score: ${result.score}")
+}
+```
+
+## Preprocessing details
+
+The detector performs specific preprocessing before model inference:
+
+### 1. Multi-scale cropping
+
+```kotlin FaceSpoofDetector.kt
+val croppedImage1 = crop(
+    origImage = frameImage,
+    bbox = faceRect,
+    bboxScale = scale1,  // 2.7x
+    targetWidth = inputImageDim,
+    targetHeight = inputImageDim,
+)
+
+val croppedImage2 = crop(
+    origImage = frameImage,
+    bbox = faceRect,
+    bboxScale = scale2,  // 4.0x
+    targetWidth = inputImageDim,
+    targetHeight = inputImageDim,
+)
+```
+
+### 2. RGB to BGR conversion
+
+The models expect BGR color format:
+
+```kotlin FaceSpoofDetector.kt
+for (i in 0 until croppedImage1.width) {
+    for (j in 0 until croppedImage1.height) {
+        croppedImage1[i, j] = Color.rgb(
+            Color.blue(croppedImage1[i, j]),
+            Color.green(croppedImage1[i, j]),
+            Color.red(croppedImage1[i, j]),
+        )
+    }
+}
+```
+
+### 3. Softmax averaging
+
+Predictions from both scales are combined:
+
+```kotlin FaceSpoofDetector.kt
+val output = softMax(output1[0])
+    .zip(softMax(output2[0]))
+    .map { (it.first + it.second) }
+val label = output.indexOf(output.max())
+val isSpoof = label != 1  // Label 1 = real face
+val score = output[label] / 2f
+```
+
+## Performance tuning
+
+By default, the detector uses CPU with 4 threads:
+
+```kotlin
+val spoofDetector = FaceSpoofDetector(
+    context = context,
+    useGpu = false,      // CPU execution
+    useXNNPack = false,  // Disable XNNPACK optimization
+    useNNAPI = false,    // Disable NNAPI
+)
+```
+
+### Enabling GPU acceleration
+
+<Warning>
+GPU acceleration may not improve performance for these small models and can cause compatibility issues on some devices.
+</Warning>
+
+```kotlin
+val spoofDetector = FaceSpoofDetector(
+    context = context,
+    useGpu = true,       // Enable GPU delegate
+    useXNNPack = false,
+    useNNAPI = false,
+)
+```
+
+### Using NNAPI
+
+```kotlin
+val spoofDetector = FaceSpoofDetector(
+    context = context,
+    useGpu = false,
+    useXNNPack = true,   // XNNPACK for CPU optimization
+    useNNAPI = true,     // Android NNAPI
+)
+```
+
+## Performance metrics
+
+Typical inference times on mid-range devices:
+
+| Configuration | Inference Time | Total Time (with preprocessing) |
+|---------------|----------------|----------------------------------|
+| CPU (4 threads) | ~15-25ms | ~30-45ms |
+| GPU | ~20-30ms | ~35-50ms |
+| NNAPI | ~10-20ms | ~25-40ms |
+
+<Tip>
+The detector measures and returns timing in the `FaceSpoofResult.timeMillis` field, which appears in the app's performance metrics.
+</Tip>
+
+## Accuracy considerations
+
+The anti-spoofing models have limitations:
+
+**Effective against:**
+- Printed photos (90%+ accuracy)
+- Digital screens (85%+ accuracy)
+- Simple video replays (80%+ accuracy)
+
+**Less effective against:**
+- High-quality 3D masks (50-70% accuracy)
+- Advanced video replay attacks
+- Adversarial attacks
+
+<Warning>
+Anti-spoofing is not foolproof. For high-security applications, combine it with other verification methods like challenge-response or depth sensors.
+</Warning>
+
+## Model sources
+
+The TFLite models were converted from PyTorch weights:
+
+1. Original PyTorch weights from [deepface](https://github.com/serengil/deepface)
+2. Converted via ONNX to TensorFlow
+3. Quantized to FP16 for mobile deployment
+
+See the [conversion notebook](https://github.com/shubham0204/OnDevice-Face-Recognition-Android/blob/main/resources/Liveness_PT_Model_to_TF.ipynb) in the source repository.

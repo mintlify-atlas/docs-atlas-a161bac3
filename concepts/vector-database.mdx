@@ -1,0 +1,493 @@
+---
+title: Vector database
+description: How FaceNet Android stores and searches embeddings using ObjectBox
+---
+
+The vector database is the storage and retrieval system for face embeddings. FaceNet Android uses ObjectBox with HNSW indexing to enable fast similarity search. This page explains how embeddings are stored, indexed, and queried.
+
+## What is a vector database?
+
+A vector database specializes in storing and searching high-dimensional vectors (embeddings). Unlike traditional databases that search for exact matches, vector databases find **similar** vectors using distance metrics.
+
+For face recognition:
+- Each face is represented as a 512D embedding
+- Query: "Which stored embedding is most similar to this new face?"
+- Result: Nearest neighbor(s) with similarity scores
+
+## ObjectBox overview
+
+ObjectBox is a high-performance NoSQL database for mobile devices with built-in vector search capabilities.
+
+### Key features
+
+- **HNSW indexing**: Fast approximate nearest-neighbor search
+- **Native code**: Written in C++ for speed
+- **On-device**: No network latency or privacy concerns
+- **Typed entities**: Compile-time safety with Kotlin data classes
+- **Automatic indexing**: Vectors indexed on insert
+
+### Database initialization
+
+The database is initialized once at app startup:
+
+```kotlin
+object ObjectBoxStore {
+    lateinit var store: BoxStore
+        private set
+
+    fun init(context: Context) {
+        store = MyObjectBox.builder()
+            .androidContext(context)
+            .build()
+    }
+}
+```
+
+Called from `MainApplication.onCreate()`:
+
+```kotlin
+class MainApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        ObjectBoxStore.init(this)
+        // ...
+    }
+}
+```
+
+## Data model
+
+The `FaceImageRecord` entity stores embeddings with metadata:
+
+```kotlin
+@Entity
+data class FaceImageRecord(
+    @Id var recordID: Long = 0,
+    @Index var personID: Long = 0,
+    var personName: String = "",
+    @HnswIndex(
+        dimensions = 512,
+        distanceType = VectorDistanceType.COSINE,
+    ) var faceEmbedding: FloatArray = floatArrayOf()
+)
+```
+
+### Field descriptions
+
+- **`recordID`**: Auto-generated unique identifier for each face record
+- **`personID`**: Foreign key linking to `PersonRecord` (one person can have multiple face images)
+- **`personName`**: Denormalized name for quick access without joins
+- **`faceEmbedding`**: The 512-dimensional embedding vector with HNSW index
+
+### HNSW index configuration
+
+The `@HnswIndex` annotation configures vector search:
+
+```kotlin
+@HnswIndex(
+    dimensions = 512,                          // Vector dimensionality
+    distanceType = VectorDistanceType.COSINE,  // Similarity metric
+)
+```
+
+**Distance types**:
+- `COSINE`: Measures angular similarity (used in the app)
+- `EUCLIDEAN`: Measures straight-line distance
+- `DOT_PRODUCT`: Measures alignment
+
+<Info>
+Cosine distance is ideal for face embeddings because it's invariant to vector magnitude, focusing purely on directional similarity.
+</Info>
+
+## Database operations
+
+The `ImagesVectorDB` class wraps ObjectBox operations:
+
+```kotlin
+@Single
+class ImagesVectorDB {
+    private val imagesBox = ObjectBoxStore.store.boxFor(FaceImageRecord::class.java)
+    
+    // Add, search, delete operations...
+}
+```
+
+### Adding embeddings
+
+Insert a new face embedding:
+
+```kotlin
+fun addFaceImageRecord(record: FaceImageRecord) {
+    imagesBox.put(record)
+}
+```
+
+ObjectBox automatically:
+1. Generates a unique `recordID`
+2. Stores the record in the database
+3. Updates the HNSW index with the new embedding
+
+### Searching embeddings
+
+Find the nearest neighbor to a query embedding:
+
+```kotlin
+fun getNearestEmbeddingPersonName(
+    embedding: FloatArray,
+    flatSearch: Boolean,
+): FaceImageRecord?
+```
+
+The method supports two search strategies:
+
+#### 1. HNSW search (default, fast)
+
+```kotlin
+return imagesBox
+    .query(FaceImageRecord_.faceEmbedding.nearestNeighbors(embedding, 10))
+    .build()
+    .findWithScores()
+    .map { it.get() }
+    .firstOrNull()
+```
+
+HNSW parameters:
+- `nearestNeighbors(embedding, 10)`: Find up to 10 nearest neighbors
+- `findWithScores()`: Return results with similarity scores
+- `.firstOrNull()`: Take the closest match
+
+<Note>
+`maxResultCount` of 10 is used to improve HNSW search quality. The top-10 candidates are retrieved, but only the best match is returned.
+</Note>
+
+#### 2. Flat search (precise, slower)
+
+```kotlin
+if (flatSearch) {
+    val allRecords = imagesBox.all
+    val numThreads = 4
+    val batchSize = allRecords.size / numThreads
+    val batches = allRecords.chunked(batchSize)
+    
+    val results = runBlocking {
+        batches.map { batch ->
+            async(Dispatchers.Default) {
+                var bestMatch: FaceImageRecord? = null
+                var bestDistance = Float.NEGATIVE_INFINITY
+                for (record in batch) {
+                    val distance = cosineDistance(embedding, record.faceEmbedding)
+                    if (distance > bestDistance) {
+                        bestDistance = distance
+                        bestMatch = record
+                    }
+                }
+                Pair(bestMatch, bestDistance)
+            }
+        }.awaitAll()
+    }
+    return results.maxByOrNull { it.second }?.first
+}
+```
+
+Flat search:
+- Retrieves all records from database
+- Splits into 4 batches for parallel processing
+- Computes exact cosine similarity for each embedding
+- Returns the true nearest neighbor
+
+### Deleting embeddings
+
+Remove all face records for a person:
+
+```kotlin
+fun removeFaceRecordsWithPersonID(personID: Long) {
+    imagesBox.removeByIds(
+        imagesBox.query(FaceImageRecord_.personID.equal(personID))
+            .build()
+            .findIds()
+            .toList()
+    )
+}
+```
+
+## Similarity calculation
+
+Both search methods use cosine similarity:
+
+```kotlin
+private fun cosineDistance(
+    x1: FloatArray,
+    x2: FloatArray,
+): Float {
+    var mag1 = 0.0f
+    var mag2 = 0.0f
+    var product = 0.0f
+    for (i in x1.indices) {
+        mag1 += x1[i] * x1[i]
+        mag2 += x2[i] * x2[i]
+        product += x1[i] * x2[i]
+    }
+    mag1 = sqrt(mag1)
+    mag2 = sqrt(mag2)
+    return product / (mag1 * mag2)
+}
+```
+
+Mathematically:
+
+```
+cosine_similarity(a, b) = (a · b) / (||a|| × ||b||)
+
+where:
+  a · b = Σ(aᵢ × bᵢ)        (dot product)
+  ||a|| = √(Σ(aᵢ²))          (magnitude)
+```
+
+### Interpretation
+
+Cosine similarity ranges from -1 to 1:
+
+| Range | Meaning |
+|-------|----------|
+| 0.8 - 1.0 | Very similar (likely same person) |
+| 0.5 - 0.8 | Similar (possibly same person) |
+| 0.3 - 0.5 | Moderately similar (threshold region) |
+| 0.0 - 0.3 | Different people |
+| < 0.0 | Opposite directions (very different) |
+
+The app uses **0.3 as the threshold** for recognition.
+
+## HNSW algorithm
+
+HNSW (Hierarchical Navigable Small World) is an approximate nearest-neighbor algorithm.
+
+### How HNSW works
+
+1. **Build phase** (during insertion):
+   - Construct a multi-layer graph
+   - Each layer is a navigable small-world network
+   - Higher layers are sparser, lower layers are denser
+   - New vector is connected to nearby neighbors
+
+2. **Search phase** (during query):
+   - Start at top layer
+   - Greedily navigate towards the query vector
+   - Descend to lower layers for refinement
+   - Return k-nearest neighbors from bottom layer
+
+### Complexity
+
+- **Insertion**: O(log N) with N being the number of vectors
+- **Search**: O(log N) on average
+- **Space**: O(N × M) where M is average connections per node
+
+### Tradeoffs
+
+**Advantages**:
+- Sublinear search time (much faster than linear)
+- Good recall (finds true neighbors most of the time)
+- Scalable to millions of vectors
+
+**Disadvantages**:
+- Approximate (may miss true nearest neighbor)
+- Uses extra memory for graph structure
+- Slower insertion than flat storage
+
+<Tip>
+HNSW is ideal when you have hundreds or thousands of faces. For small databases (&lt;50 faces), flat search may be faster and more accurate.
+</Tip>
+
+## Search strategy comparison
+
+### HNSW search (default)
+
+```kotlin
+flatSearch = false
+```
+
+| Aspect | Performance |
+|--------|------------|
+| Search time | 5-20ms for 1000 faces |
+| Accuracy | ~95% recall (may miss true neighbor) |
+| Scalability | Excellent (handles 100k+ vectors) |
+| Best for | Real-time recognition, large databases |
+
+### Flat search (precise)
+
+```kotlin
+flatSearch = true
+```
+
+| Aspect | Performance |
+|--------|------------|
+| Search time | 50-200ms for 1000 faces (parallelized) |
+| Accuracy | 100% recall (always finds true neighbor) |
+| Scalability | Poor (linear with database size) |
+| Best for | High-accuracy requirements, small databases |
+
+### Configuration
+
+Enable flat search in `FaceDetectionOverlay.kt`:
+
+```kotlin
+private val flatSearch: Boolean = false  // Set to true for precise search
+```
+
+<Warning>
+Flat search scans all embeddings on every frame. With 1000+ faces, this can cause noticeable lag in real-time recognition.
+</Warning>
+
+## Parallelization
+
+Flat search parallelizes computation across 4 coroutines:
+
+```kotlin
+val numThreads = 4
+val batchSize = allRecords.size / numThreads
+val batches = allRecords.chunked(batchSize)
+```
+
+This splits the database into quarters:
+- Thread 1: Records 0-249
+- Thread 2: Records 250-499  
+- Thread 3: Records 500-749
+- Thread 4: Records 750-999
+
+Each thread finds its local best match, then results are merged.
+
+## Precision refinement
+
+After HNSW search, the app re-computes exact similarity:
+
+```kotlin
+// In ImageVectorUseCase.kt
+val recognitionResult = imagesVectorDB.getNearestEmbeddingPersonName(embedding, flatSearch)
+
+// Re-compute exact cosine similarity
+val distance = cosineDistance(embedding, recognitionResult.faceEmbedding)
+
+if (distance > 0.3) {
+    faceRecognitionResults.add(
+        FaceRecognitionResult(recognitionResult.personName, boundingBox)
+    )
+} else {
+    faceRecognitionResults.add(
+        FaceRecognitionResult("Not recognized", boundingBox)
+    )
+}
+```
+
+Why re-compute?
+
+- ObjectBox uses lossy compression on embeddings
+- Stored embeddings are not exact
+- Distance returned by HNSW is approximate
+- Re-computing ensures threshold comparison is accurate
+
+<Note>
+This two-stage approach (fast HNSW search + precise similarity check) balances speed and accuracy.
+</Note>
+
+## Person database
+
+A separate `PersonRecord` entity tracks person metadata:
+
+```kotlin
+@Entity
+data class PersonRecord(
+    @Id var personID: Long = 0,
+    var personName: String = "",
+    var numImages: Long = 0,
+    var addTime: Long = 0
+)
+```
+
+Relationship:
+- One `PersonRecord` has many `FaceImageRecord`s
+- `personID` links the entities
+- Deleting a person cascades to delete all their face embeddings
+
+## Database management
+
+### Storage location
+
+ObjectBox stores data in the app's private directory:
+
+```
+/data/data/com.ml.shubham0204.facenet_android/files/objectbox/
+```
+
+### File structure
+
+- `data.mdb`: Main database file
+- `lock.mdb`: Lock file for concurrent access
+- `objectbox.db`: Metadata and schema
+
+### Database size
+
+Storage requirements:
+
+- Each `FaceImageRecord`: ~2.5 KB (512 floats + metadata + index overhead)
+- 100 faces: ~250 KB
+- 1000 faces: ~2.5 MB
+- 10000 faces: ~25 MB
+
+### Clearing database
+
+To reset the database (clears all enrolled faces):
+
+1. Uninstall and reinstall the app, or
+2. Clear app data in Android settings
+
+<Warning>
+There's no built-in "reset database" feature. Clearing data deletes all enrolled faces permanently.
+</Warning>
+
+## Performance optimization
+
+### Indexing strategy
+
+ObjectBox automatically maintains indices:
+
+- `@Index` on `personID`: Fast lookups by person
+- `@HnswIndex` on `faceEmbedding`: Fast similarity search
+- `@Id` on `recordID`: Fast direct access
+
+### Query optimization
+
+Use `maxResultCount` for better HNSW quality:
+
+```kotlin
+.query(FaceImageRecord_.faceEmbedding.nearestNeighbors(embedding, 10))
+```
+
+Retrieving 10 candidates and picking the best improves accuracy over just requesting 1.
+
+### Batch operations
+
+When enrolling multiple images:
+
+```kotlin
+imagesBox.put(listOfRecords)  // Batch insert
+```
+
+Batch operations are faster than individual inserts.
+
+## Error handling
+
+The database layer doesn't throw exceptions but returns nullable results:
+
+```kotlin
+fun getNearestEmbeddingPersonName(...): FaceImageRecord?
+```
+
+Calling code checks for `null` to handle "no match found" scenarios:
+
+```kotlin
+if (recognitionResult == null) {
+    faceRecognitionResults.add(FaceRecognitionResult("Not recognized", boundingBox))
+    continue
+}
+```
+
+This pattern simplifies error handling in the recognition pipeline.

@@ -1,0 +1,131 @@
+---
+title: Spoof detection models
+description: Documentation for the MiniFASNet anti-spoofing models used to detect fake faces
+---
+
+The FaceNet Android app includes face anti-spoofing capabilities using the MiniFASNet model from the [Silent-Face-Anti-Spoofing](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing) project. This feature helps detect whether a face is real or a spoof (photo, video, 3D model).
+
+## Model overview
+
+The face spoof detection system uses two TensorFlow Lite models that analyze the same face at different scales:
+
+- `spoof_model_scale_2_7.tflite` - Analyzes faces at 2.7x scale
+- `spoof_model_scale_4_0.tflite` - Analyzes faces at 4.0x scale
+
+Both models work together to provide robust anti-spoofing detection by combining their predictions.
+
+## Model specifications
+
+### Input requirements
+
+**Input shape:** `[1, 80, 80, 3]` - 80x80 RGB image
+
+**Preprocessing:**
+1. Crop face using bounding box scaled by respective scale factor (2.7 or 4.0)
+2. Resize cropped face to 80x80 pixels
+3. Convert RGB to BGR color format
+4. Cast to FLOAT32 data type
+
+### Output specifications
+
+**Output shape:** `[1, 3]` - 3-class probability distribution
+
+**Classes:**
+- Class 0: Spoof type 1
+- Class 1: Real face
+- Class 2: Spoof type 2
+
+<Note>
+A face is classified as real only if the final prediction is class 1 after combining outputs from both models.
+</Note>
+
+## How it works
+
+The spoof detection algorithm follows these steps:
+
+1. **Dual-scale cropping:** The face bounding box is scaled by 2.7x and 4.0x separately, and two cropped images are created at 80x80 resolution.
+
+2. **Color space conversion:** Both images are converted from RGB to BGR format to match the model's training data.
+
+3. **Inference:** Each model processes its respective scaled input and outputs a 3-element probability vector.
+
+4. **Softmax normalization:** Both output vectors are normalized using softmax.
+
+5. **Fusion:** The normalized outputs are averaged element-wise to produce the final prediction.
+
+6. **Classification:** The class with the highest average probability determines the result:
+   - If class 1 has the highest score → Real face
+   - Otherwise → Spoof detected
+
+## Implementation details
+
+The spoof detection is implemented in `FaceSpoofDetector.kt` with the following key components:
+
+```kotlin
+private val scale1 = 2.7f
+private val scale2 = 4.0f
+private val inputImageDim = 80
+private val outputDim = 3
+```
+
+### Model loading
+
+```kotlin
+firstModelInterpreter =
+    Interpreter(
+        FileUtil.loadMappedFile(context, "spoof_model_scale_2_7.tflite"),
+        interpreterOptions,
+    )
+secondModelInterpreter =
+    Interpreter(
+        FileUtil.loadMappedFile(context, "spoof_model_scale_4_0.tflite"),
+        interpreterOptions,
+    )
+```
+
+### Detection result
+
+The `detectSpoof()` method returns a `FaceSpoofResult` object:
+
+```kotlin
+data class FaceSpoofResult(
+    val isSpoof: Boolean,      // true if face is fake
+    val score: Float,           // confidence score
+    val timeMillis: Long,       // inference time in milliseconds
+)
+```
+
+## Model source
+
+The original models are from the [Silent-Face-Anti-Spoofing](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing) repository, which provides PyTorch-based face anti-spoofing using MiniFASNet architecture.
+
+### Conversion process
+
+The PyTorch model weights were converted to TensorFlow Lite format via ONNX. The conversion process is documented in the project's Jupyter notebook:
+
+[Liveness_PT_Model_to_TF.ipynb](https://github.com/shubham0204/OnDevice-Face-Recognition-Android/blob/main/resources/Liveness_PT_Model_to_TF.ipynb)
+
+<Note>
+The conversion ensures compatibility with the TensorFlow Lite runtime already used for FaceNet, avoiding the need to include additional deep learning frameworks in the app.
+</Note>
+
+## Model architecture
+
+MiniFASNet (Fast Anti-Spoofing Network) is a lightweight CNN architecture designed for efficient on-device face anti-spoofing. Key features:
+
+- **Multi-scale analysis:** Uses different scales to capture both local details and global context
+- **Fourier-based loss:** During training, the model is penalized for both classification error and differences between Fourier transforms of intermediate CNN features
+- **Lightweight design:** Optimized for mobile deployment with minimal computational overhead
+
+## Performance considerations
+
+- Both models run in parallel during inference
+- Total inference time typically ranges from 10-30ms on modern Android devices
+- GPU acceleration can be enabled for faster processing
+- The dual-scale approach provides better accuracy than single-scale methods
+
+## External resources
+
+- [Silent-Face-Anti-Spoofing GitHub repository](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing)
+- [deepface anti-spoofing implementation](https://github.com/serengil/deepface/blob/master/deepface/models/spoofing/FasNet.py)
+- [Project issue #1: Face-liveness detection](https://github.com/shubham0204/OnDevice-Face-Recognition-Android/issues/1)

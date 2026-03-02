@@ -1,80 +1,165 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick start
+description: Get FaceNet Android up and running in minutes
 ---
 
-## Get started in three steps
+## Choose your path
 
-Get your documentation site running locally and make your first customization.
+There are two ways to get started with FaceNet Android:
 
-### Step 1: Set up your local environment
+<CardGroup cols={2}>
+  <Card title="Download APK" icon="download" href="#option-1-download-apk">
+    Fastest way to try the app (recommended)
+  </Card>
+  <Card title="Build from source" icon="code" href="#option-2-build-from-source">
+    For developers who want to customize the app
+  </Card>
+</CardGroup>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+## Option 1: Download APK
+
+The quickest way to try FaceNet Android is to download the pre-built APK.
+
+<Steps>
+  <Step title="Download the APK">
+    Visit the [GitHub Releases page](https://github.com/shubham0204/OnDevice-Face-Recognition-Android/releases) and download the latest APK file.
+  </Step>
+  <Step title="Enable installation from unknown sources">
+    On your Android device, go to **Settings > Security** and enable "Install unknown apps" for your browser or file manager.
+  </Step>
+  <Step title="Install the APK">
+    Open the downloaded APK file and follow the installation prompts.
+  </Step>
+  <Step title="Launch the app">
+    Open "FaceNet Android" from your app drawer.
+  </Step>
+</Steps>
+
+<Warning>
+The app requires Android 8.0 (API level 26) or higher and camera permissions to function.
+</Warning>
+
+## Option 2: Build from source
+
+If you want to customize the app or contribute to development, you can build it from source.
+
+<Steps>
+  <Step title="Clone the repository">
+    Open a terminal and clone the repository:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    git clone --depth=1 https://github.com/shubham0204/OnDevice-Face-Recognition-Android
+    cd OnDevice-Face-Recognition-Android
+    ```
+  </Step>
+  <Step title="Open in Android Studio">
+    Launch Android Studio and select **File > Open**, then choose the cloned directory.
+  </Step>
+  <Step title="Sync Gradle">
+    Android Studio will automatically prompt you to sync Gradle. Click **Sync Now** and wait for dependencies to download.
+  </Step>
+  <Step title="Run the app">
+    Connect an Android device or start an emulator, then click the **Run** button (green play icon) in Android Studio.
+  </Step>
+</Steps>
+
+<Info>
+Building from source requires Android Studio Hedgehog or newer with Gradle 8.0+.
+</Info>
+
+## Using the app
+
+Once you have the app installed, follow these steps to recognize faces:
+
+### Add faces to the database
+
+<Steps>
+  <Step title="Navigate to the add face screen">
+    Tap the **Add Person** button on the home screen.
+  </Step>
+  <Step title="Enter a person's name">
+    Type the name of the person you want to add to the database.
+  </Step>
+  <Step title="Select images">
+    Tap **Select Images** and choose one or more photos containing the person's face. The app will automatically detect and crop faces from each image.
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    <Warning>
+    Each image must contain exactly one face. The app will reject images with multiple faces or no faces.
+    </Warning>
+  </Step>
+  <Step title="Save the person">
+    After selecting images, tap **Save**. The app will:
+    - Detect faces in each image using MLKit
+    - Generate 512-dimensional embeddings using FaceNet
+    - Store the embeddings in the ObjectBox database
+  </Step>
+</Steps>
 
-### Step 2: Deploy your changes
+### Recognize faces in real-time
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+<Steps>
+  <Step title="Open the detection screen">
+    Tap **Start Detection** on the home screen to open the camera.
+  </Step>
+  <Step title="Point the camera at a face">
+    The app will:
+    - Detect faces in each camera frame
+    - Generate embeddings for detected faces
+    - Search the database for the nearest matching embedding
+    - Display the person's name if the similarity exceeds the threshold (0.3)
+  </Step>
+  <Step title="View performance metrics">
+    Real-time latency metrics are displayed at the top of the screen:
+    - **Face Detection**: Time to detect faces in the frame
+    - **Embedding**: Time to generate FaceNet embeddings
+    - **Search**: Time to find nearest neighbors
+    - **Spoof**: Time for anti-spoofing validation
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Understanding recognition results
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+The app uses cosine similarity to determine if a detected face matches someone in the database:
 
-### Step 3: Go live
+- **Distance > 0.3**: Face is recognized and the person's name is displayed
+- **Distance ≤ 0.3**: Face is not recognized, displays "Not recognized"
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+From `ImageVectorUseCase.kt:89-101`:
+```kotlin
+val distance = cosineDistance(embedding, recognitionResult.faceEmbedding)
+// If the distance > 0.4, we recognize the person
+// else we conclude that the face does not match enough
+if (distance > 0.3) {
+    faceRecognitionResults.add(
+        FaceRecognitionResult(recognitionResult.personName, boundingBox, spoofResult),
+    )
+} else {
+    faceRecognitionResults.add(
+        FaceRecognitionResult("Not recognized", boundingBox, spoofResult),
+    )
+}
+```
+
+<Info>
+You can adjust this threshold by modifying the value in `ImageVectorUseCase.kt:93`. Lower values are more strict (fewer false positives), higher values are more lenient (fewer false negatives).
+</Info>
+
+## Anti-spoofing detection
+
+The app includes liveness detection to prevent recognition using photos or videos. When a face is detected, the spoof detection result is displayed:
+
+- **Real**: The face appears to be a real person
+- **Spoof**: The face appears to be a photo, screen, or 3D model
+
+This uses FASNet models from [Silent-Face-Anti-Spoofing](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing), which analyze the face at multiple scales to detect artifacts characteristic of fake faces.
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Configuration" icon="gear" href="/installation#configuration">
+    Learn how to customize the FaceNet model, search algorithm, and face detector
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/introduction#technical-architecture">
+    Understand how the app works under the hood
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

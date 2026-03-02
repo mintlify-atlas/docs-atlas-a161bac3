@@ -1,0 +1,133 @@
+---
+title: Adding faces
+description: Learn how to add faces to the database for recognition
+---
+
+To recognize faces, you first need to build a database of known faces. FaceNet Android allows you to select images from your gallery and label them with person names.
+
+## How it works
+
+When you add faces to the database, the app performs the following steps:
+
+1. **Face detection**: MLKit or Mediapipe detects and crops faces from your selected images
+2. **Embedding generation**: The FaceNet model converts each cropped face into a 512-dimensional (or 128-dimensional) vector embedding
+3. **Storage**: Face embeddings are stored in an ObjectBox vector database for fast nearest-neighbor search
+
+## Adding a new person
+
+<Steps>
+  <Step title="Open the face list">
+    From the main camera screen, tap the face icon in the top-right corner to open the Face List screen.
+  </Step>
+  
+  <Step title="Start adding a face">
+    Tap the floating action button (+ icon) to navigate to the Add Face screen.
+  </Step>
+  
+  <Step title="Enter the person's name">
+    In the text field, enter the name of the person whose face you want to add to the database.
+    
+    ```kotlin
+    TextField(
+        modifier = Modifier.fillMaxWidth(),
+        value = personName,
+        onValueChange = { personName = it },
+        label = { Text(text = "Enter the person's name") },
+        singleLine = true,
+    )
+    ```
+  </Step>
+  
+  <Step title="Select photos">
+    Tap the "Choose photos" button to open the photo picker. You can select multiple images of the same person.
+    
+    <Tip>
+      For better recognition accuracy, select multiple photos of the person from different angles and lighting conditions.
+    </Tip>
+  </Step>
+  
+  <Step title="Add to database">
+    Review the selected images in the grid, then tap "Add to database". The app will process each image:
+    
+    - Detect faces in the image
+    - Generate embeddings using the FaceNet model
+    - Store the embeddings in the database
+    
+    A progress dialog shows how many images have been processed.
+  </Step>
+</Steps>
+
+## Under the hood
+
+The `AddFaceScreenViewModel` handles the image processing workflow:
+
+```kotlin AddFaceScreenViewModel.kt
+fun addImages() {
+    isProcessingImages.value = true
+    CoroutineScope(Dispatchers.Default).launch {
+        val id = personUseCase.addPerson(
+            personNameState.value,
+            selectedImageURIs.value.size.toLong(),
+        )
+        selectedImageURIs.value.forEach {
+            imageVectorUseCase
+                .addImage(id, personNameState.value, it)
+                .onFailure {
+                    val errorMessage = (it as AppException).errorCode.message
+                    setProgressDialogText(errorMessage)
+                }.onSuccess {
+                    numImagesProcessed.value += 1
+                    setProgressDialogText("Processed ${numImagesProcessed.value} image(s)")
+                }
+        }
+        isProcessingImages.value = false
+    }
+}
+```
+
+## Database structure
+
+Face data is stored in two entities:
+
+```kotlin DataModels.kt
+@Entity
+data class FaceImageRecord(
+    @Id var recordID: Long = 0,
+    @Index var personID: Long = 0,
+    var personName: String = "",
+    @HnswIndex(
+        dimensions = 512,
+        distanceType = VectorDistanceType.COSINE,
+    ) var faceEmbedding: FloatArray = floatArrayOf(),
+)
+
+@Entity
+data class PersonRecord(
+    @Id var personID: Long = 0,
+    var personName: String = "",
+    var numImages: Long = 0,
+    var addTime: Long = 0,
+)
+```
+
+- **PersonRecord**: Stores person metadata (name, number of images, timestamp)
+- **FaceImageRecord**: Stores individual face embeddings with HNSW indexing for fast vector search
+
+## Managing faces
+
+From the Face List screen, you can:
+
+- View all people in your database with timestamps
+- Remove people by tapping the X icon next to their name
+- Add more people using the floating action button
+
+<Warning>
+  Removing a person deletes all their face embeddings from the database. This action cannot be undone.
+</Warning>
+
+## Next steps
+
+Once you've added faces to the database, you can:
+
+- [Start recognizing faces in real-time](/guides/recognizing-faces)
+- [Configure the FaceNet model and search options](/guides/configuration)

@@ -1,0 +1,137 @@
+---
+title: Face detector options
+description: Choose between MediaPipe and MLKit face detection backends
+---
+
+FaceNet Android supports two face detection backends: Google MLKit and MediaPipe Face Detector. Both detect faces in images and provide bounding boxes for cropping.
+
+## Available detectors
+
+### MLKit Face Detector
+
+MLKit provides Google's on-device face detection API with two performance modes:
+
+- **Fast mode** - Used for real-time camera frame detection
+- **Accurate mode** - Used for processing user-selected images
+
+The MLKit detector automatically switches between modes based on the operation.
+
+### MediaPipe Face Detector
+
+MediaPipe uses the BlazeFace short-range model for face detection. It runs in IMAGE mode and processes both camera frames and static images with the same configuration.
+
+## Switching detectors
+
+To change the face detection backend, modify `AppModule.kt:15`:
+
+```kotlin AppModule.kt
+@Module
+@ComponentScan("com.ml.shubham0204.facenet_android")
+class AppModule {
+
+    // Set to true for MLKit, false for MediaPipe
+    private var isMLKit = true
+
+    @Single
+    fun provideFaceDetector(context: Context): BaseFaceDetector = if (isMLKit) {
+        MLKitFaceDetector(context)
+    } else {
+        MediapipeFaceDetector(context)
+    }
+}
+```
+
+<Tip>
+MLKit is enabled by default and provides better performance on most devices through its dual-mode approach.
+</Tip>
+
+## MLKit configuration
+
+The MLKit detector creates two detector instances in `MLKitFaceDetector.kt:20-28`:
+
+```kotlin MLKitFaceDetector.kt
+// For real-time camera detection
+private val realTimeOpts = FaceDetectorOptions.Builder()
+    .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+    .build()
+private val realTimeFaceDetector = FaceDetection.getClient(realTimeOpts)
+
+// For static image processing
+private val highAccuracyOpts = FaceDetectorOptions.Builder()
+    .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+    .build()
+private val highAccuracyFaceDetector = FaceDetection.getClient(highAccuracyOpts)
+```
+
+### Customizing MLKit options
+
+You can configure additional MLKit options:
+
+```kotlin
+val options = FaceDetectorOptions.Builder()
+    .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+    .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+    .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+    .setMinFaceSize(0.15f)  // Minimum face size relative to image
+    .enableTracking()  // Track faces across frames
+    .build()
+```
+
+<Warning>
+Enabling additional features like landmarks or classification increases processing time and is not required for face recognition.
+</Warning>
+
+## MediaPipe configuration
+
+The MediaPipe detector uses the BlazeFace short-range model in `MediapipeFaceDetector.kt:23-31`:
+
+```kotlin MediapipeFaceDetector.kt
+private val modelName = "blaze_face_short_range.tflite"
+private val baseOptions = BaseOptions.builder()
+    .setModelAssetPath(modelName)
+    .build()
+private val faceDetectorOptions = FaceDetector.FaceDetectorOptions
+    .builder()
+    .setBaseOptions(baseOptions)
+    .setRunningMode(RunningMode.IMAGE)
+    .build()
+private val faceDetector = FaceDetector.createFromOptions(context, faceDetectorOptions)
+```
+
+### Customizing MediaPipe options
+
+You can adjust MediaPipe detection parameters:
+
+```kotlin
+val options = FaceDetector.FaceDetectorOptions
+    .builder()
+    .setBaseOptions(baseOptions)
+    .setRunningMode(RunningMode.IMAGE)
+    .setMinDetectionConfidence(0.5f)  // Detection threshold
+    .setMinSuppressionThreshold(0.3f)  // NMS threshold
+    .build()
+```
+
+## Performance comparison
+
+| Detector | Camera Frame Detection | Static Image Detection | Model Size |
+|----------|------------------------|------------------------|------------|
+| MLKit Fast | ~15-25ms | N/A | Bundled with Google Play Services |
+| MLKit Accurate | N/A | ~30-50ms | Bundled with Google Play Services |
+| MediaPipe | ~20-35ms | ~20-35ms | 2.8 MB |
+
+<Tip>
+MLKit relies on Google Play Services and may download models on first use. MediaPipe bundles the model in your APK, increasing app size but ensuring offline availability.
+</Tip>
+
+## When to use each detector
+
+**Use MLKit when:**
+- You need the fastest real-time detection
+- Your app targets devices with Google Play Services
+- You want to minimize APK size
+
+**Use MediaPipe when:**
+- You need guaranteed offline functionality
+- You're targeting devices without Google Play Services
+- You want consistent performance across modes

@@ -1,0 +1,161 @@
+---
+title: Face detection models
+description: Documentation for Mediapipe BlazeFace and MLKit face detection models
+---
+
+The FaceNet Android app supports two different face detection solutions: Mediapipe's BlazeFace and Google MLKit Face Detection. You can configure which one to use based on your requirements.
+
+## Available face detectors
+
+### Mediapipe BlazeFace (short range)
+
+Mediapipe's face detection uses the BlazeFace model, a lightweight face detection solution optimized for mobile devices.
+
+**Model:** `blaze_face_short_range.tflite`
+
+**Key features:**
+- Optimized for detecting faces within 2 meters of the camera
+- Fast inference speed suitable for real-time detection
+- Provides face bounding boxes and key facial landmarks
+- Part of Google's Mediapipe framework
+
+**Architecture:** BlazeFace is a lightweight CNN-based detector that uses depthwise separable convolutions and feature pyramid networks for efficient face detection.
+
+<Note>
+The BlazeFace short-range model is specifically tuned for selfie and close-up scenarios, making it ideal for face recognition applications.
+</Note>
+
+### Google MLKit Face Detection
+
+MLKit provides an on-device face detection API that doesn't require manual TFLite model management.
+
+**Key features:**
+- High-level API with automatic model management
+- Detects faces in various orientations
+- Provides facial landmarks (eyes, nose, mouth, etc.)
+- Returns face contours and bounding boxes
+- No manual model loading required
+
+**Use cases:**
+- Easier integration with automatic updates
+- More robust detection across different angles
+- Better support for edge cases
+
+## Choosing between detectors
+
+You can configure which face detector to use in `AppModule.kt`:
+
+```kotlin
+@Module
+@ComponentScan("com.ml.shubham0204.facenet_android")
+class AppModule {
+
+    private var isMLKit = true  // Set to false for Mediapipe
+
+    @Single
+    fun provideFaceDetector(context: Context): BaseFaceDetector = if (isMLKit) {
+        MLKitFaceDetector(context)
+    } else {
+        MediapipeFaceDetector(context)
+    }
+}
+```
+
+### When to use Mediapipe BlazeFace
+
+- You want more control over the face detection model
+- You need the smallest possible APK size
+- You're targeting close-range face detection scenarios
+- You want to customize the TFLite model or delegate options
+
+### When to use MLKit
+
+- You prefer a higher-level API with less manual configuration
+- You want automatic model updates from Google
+- You need robust detection across various face angles
+- You want additional features like smile detection and eye-open detection
+
+## Mediapipe BlazeFace implementation
+
+The Mediapipe face detector is implemented in `MediapipeFaceDetector.kt` and uses the `blaze_face_short_range.tflite` model.
+
+**Implementation class:** `MediapipeFaceDetector.kt`
+
+**Model location:** `app/src/main/assets/blaze_face_short_range.tflite`
+
+**Input:** Camera frame or bitmap image
+
+**Output:** List of `FaceDetectionResult` objects containing:
+- Face bounding box coordinates
+- Detection confidence score
+- Facial landmark positions (if available)
+
+## MLKit implementation
+
+The MLKit face detector is implemented in `MLKitFaceDetector.kt` and uses Google's Face Detection API.
+
+**Implementation class:** `MLKitFaceDetector.kt`
+
+**API:** Google ML Kit Face Detection
+
+**Input:** Camera frame or bitmap image
+
+**Output:** List of `FaceDetectionResult` objects containing:
+- Face bounding box coordinates
+- Detection confidence score
+- Facial landmarks (eyes, nose, mouth, ears)
+- Face contours
+- Head rotation angles (Euler X, Y, Z)
+
+## Face detection workflow
+
+Both detectors follow the same high-level workflow:
+
+1. **Receive input:** Accept a bitmap image or camera frame
+2. **Preprocessing:** Convert to the required format (if needed)
+3. **Detection:** Run face detection inference
+4. **Post-processing:** Convert detector-specific results to `FaceDetectionResult`
+5. **Cropping:** Extract face regions based on bounding boxes
+6. **Return results:** Provide cropped face images for FaceNet embedding
+
+## Performance comparison
+
+| Feature | Mediapipe BlazeFace | MLKit |
+|---------|-------------------|-------|
+| Inference speed | Very fast (~10-20ms) | Fast (~15-30ms) |
+| Model size | Small (~1.5 MB) | Medium (~3-5 MB) |
+| API complexity | Lower level | Higher level |
+| Customization | High | Limited |
+| Detection range | Short range (0-2m) | All ranges |
+| Landmarks | Basic | Detailed |
+
+<Note>
+Performance metrics are approximate and vary based on device hardware, image resolution, and number of faces in the frame.
+</Note>
+
+## External resources
+
+### Mediapipe BlazeFace
+
+- [Mediapipe Face Detector documentation](https://ai.google.dev/edge/mediapipe/solutions/vision/face_detector/android)
+- [BlazeFace short-range model details](https://ai.google.dev/edge/mediapipe/solutions/vision/face_detector#blazeface_short-range)
+- [Mediapipe Face Detection guide](https://ai.google.dev/edge/mediapipe/solutions/vision/face_detector)
+
+### Google MLKit
+
+- [MLKit Face Detection documentation](https://developers.google.com/ml-kit/vision/face-detection)
+- [MLKit Android guide](https://developers.google.com/ml-kit/vision/face-detection/android)
+- [Face Detection API reference](https://developers.google.com/android/reference/com/google/mlkit/vision/face/package-summary)
+
+## Integration with FaceNet
+
+Regardless of which face detector you choose, the detected faces are processed identically:
+
+1. Face detection extracts bounding boxes
+2. Faces are cropped to the detected regions
+3. Cropped faces are resized to 160x160 pixels
+4. Resized faces are fed to FaceNet for embedding generation
+5. Embeddings are stored in the ObjectBox vector database
+6. Cosine similarity is used to match faces during recognition
+
+This abstraction allows you to switch between face detectors without changing the rest of your face recognition pipeline.

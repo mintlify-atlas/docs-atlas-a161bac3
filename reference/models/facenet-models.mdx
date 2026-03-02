@@ -1,0 +1,143 @@
+---
+title: FaceNet models
+description: Documentation for facenet.tflite and facenet_512.tflite models used for face embedding generation
+---
+
+The FaceNet Android app uses TensorFlow Lite models sourced from the [deepface](https://github.com/serengil/deepface) library to generate face embeddings. Two variants are available with different embedding dimensions.
+
+## Model variants
+
+### facenet.tflite
+
+The standard FaceNet model that outputs 128-dimensional embeddings.
+
+**Input shape:** `[1, 160, 160, 3]` - 160x160 RGB face image
+
+**Output shape:** `[1, 128]` - 128-dimensional embedding vector
+
+**Use case:** Suitable for most face recognition tasks with lower memory footprint and faster inference.
+
+### facenet_512.tflite
+
+The extended FaceNet model that outputs 512-dimensional embeddings.
+
+**Input shape:** `[1, 160, 160, 3]` - 160x160 RGB face image
+
+**Output shape:** `[1, 512]` - 512-dimensional embedding vector
+
+**Use case:** Provides higher accuracy for face recognition at the cost of increased memory usage and slightly slower inference.
+
+<Note>
+Both models require cropped face images of size 160x160 pixels as input. Face detection is performed separately using either Mediapipe or MLKit before feeding images to FaceNet.
+</Note>
+
+## Model source
+
+Both FaceNet models are sourced from the [deepface](https://github.com/serengil/deepface) library, a popular Python library for face recognition and facial attribute analysis.
+
+## Conversion process
+
+The models were converted from Keras format to TensorFlow Lite with FP16 optimization using the following Python scripts:
+
+### Converting facenet.tflite
+
+```python
+from deepface import DeepFace
+from deepface.models.facial_recognition.Facenet import scaling
+import tensorflow as tf
+
+model = DeepFace.build_model("Facenet")
+model.model.save("facenet.keras")
+
+model = tf.keras.models.load_model("facenet.keras", custom_objects={
+    "scaling": scaling
+})
+converter_fp16 = tf.lite.TFLiteConverter.from_keras_model(model)
+converter_fp16.optimizations = [tf.lite.Optimize.DEFAULT]
+converter_fp16.target_spec.supported_types = [tf.float16]
+tflite_model_fp16 = converter_fp16.convert()
+
+with open("facenet.tflite", "wb") as file:
+    file.write(tflite_model_fp16)
+```
+
+### Converting facenet_512.tflite
+
+```python
+from deepface import DeepFace
+from deepface.models.facial_recognition.Facenet import scaling
+import tensorflow as tf
+
+model = DeepFace.build_model("Facenet512")
+model.model.save("facenet512.keras")
+
+model = tf.keras.models.load_model("facenet512.keras", custom_objects={
+    "scaling": scaling
+})
+converter_fp16 = tf.lite.TFLiteConverter.from_keras_model(model)
+converter_fp16.optimizations = [tf.lite.Optimize.DEFAULT]
+converter_fp16.target_spec.supported_types = [tf.float16]
+tflite_model_fp16 = converter_fp16.convert()
+
+with open("facenet_512.tflite", "wb") as file:
+    file.write(tflite_model_fp16)
+```
+
+<Note>
+The conversion process applies FP16 (half-precision floating point) optimization to reduce model size while maintaining accuracy.
+</Note>
+
+## Choosing between models
+
+To switch between the two FaceNet models in your app:
+
+1. **Update the model path** in `FaceNet.kt`:
+
+```kotlin
+// For facenet.tflite (128-dimensional)
+interpreter =
+    Interpreter(FileUtil.loadMappedFile(context, "facenet.tflite"), interpreterOptions)
+
+// For facenet_512.tflite (512-dimensional)
+interpreter =
+    Interpreter(FileUtil.loadMappedFile(context, "facenet_512.tflite"), interpreterOptions)
+```
+
+2. **Update the embedding dimension** in `FaceNet.kt`:
+
+```kotlin
+// For facenet.tflite
+private val embeddingDim = 128
+
+// For facenet_512.tflite
+private val embeddingDim = 512
+```
+
+3. **Update the database schema** in `DataModels.kt`:
+
+```kotlin
+@Entity
+data class FaceImageRecord(
+    @Id var recordID: Long = 0,
+    @Index var personID: Long = 0,
+    var personName: String = "",
+    
+    // Update dimensions to match your chosen model
+    @HnswIndex(dimensions = 512)  // or 128 for facenet.tflite
+    var faceEmbedding: FloatArray = floatArrayOf()
+)
+```
+
+## Model architecture
+
+FaceNet uses a deep convolutional neural network architecture based on the [FaceNet paper](https://arxiv.org/abs/1503.03832). The model is trained using triplet loss to learn embeddings where:
+
+- Embeddings of the same person are close together in the embedding space
+- Embeddings of different people are far apart
+- Cosine similarity is used to measure distance between embeddings
+
+## External resources
+
+- [deepface GitHub repository](https://github.com/serengil/deepface)
+- [FaceNet paper (Schroff et al., 2015)](https://arxiv.org/abs/1503.03832)
+- [TensorFlow Lite documentation](https://ai.google.dev/edge/lite)

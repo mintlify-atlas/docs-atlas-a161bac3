@@ -1,0 +1,173 @@
+---
+title: Recognizing faces
+description: Understand how real-time face recognition works in the camera view
+---
+
+FaceNet Android performs real-time face recognition on the camera feed by comparing detected faces against your database of known faces.
+
+## How recognition works
+
+The recognition pipeline processes each camera frame:
+
+1. **Face detection**: Detect faces in the frame using MLKit or Mediapipe
+2. **Embedding generation**: Convert each detected face into a vector embedding using FaceNet
+3. **Vector search**: Find the nearest neighbor in the database using cosine similarity
+4. **Threshold check**: If the distance is below a threshold, display the person's name
+5. **Spoof detection** (optional): Check if the face is real or a spoof (photo, video, etc.)
+
+## Using the camera screen
+
+The main camera screen is your primary interface for face recognition:
+
+### Camera controls
+
+- **Switch camera**: Tap the camera switch icon to toggle between front and rear cameras
+- **Face list**: Tap the face icon to view and manage people in your database
+
+### Recognition display
+
+When faces are detected:
+
+- **Bounding boxes**: Blue rounded rectangles appear around detected faces
+- **Name labels**: The person's name is displayed in the center of each bounding box
+- **"NOT RECOGNIZED"**: Shown when a face doesn't match anyone in the database
+
+### Performance metrics
+
+At the bottom of the screen, you'll see real-time performance metrics:
+
+```
+face detection: 45 ms
+face embedding: 78 ms
+vector search: 12 ms
+spoof detection: 34 ms
+```
+
+These metrics help you understand the performance of each pipeline stage.
+
+## Recognition pipeline implementation
+
+The `FaceDetectionOverlay` component handles the camera feed and recognition:
+
+```kotlin FaceDetectionOverlay.kt
+private val analyzer = ImageAnalysis.Analyzer { image ->
+    if (isProcessing) {
+        image.close()
+        return@Analyzer
+    }
+    isProcessing = true
+
+    // Transform android.net.Image to Bitmap
+    frameBitmap = createBitmap(image.image!!.width, image.image!!.height)
+    frameBitmap.copyPixelsFromBuffer(image.planes[0].buffer)
+
+    CoroutineScope(Dispatchers.Default).launch {
+        val predictions = ArrayList<Prediction>()
+        val (metrics, results) = viewModel.imageVectorUseCase.getNearestPersonName(
+            frameBitmap,
+            flatSearch,
+        )
+        results.forEach { (name, boundingBox, spoofResult) ->
+            val box = boundingBox.toRectF()
+            var personName = name
+            if (spoofResult != null && spoofResult.isSpoof) {
+                personName = "$personName (Spoof: ${spoofResult.score})"
+            }
+            boundingBoxTransform.mapRect(box)
+            predictions.add(Prediction(box, personName))
+        }
+        withContext(Dispatchers.Main) {
+            viewModel.faceDetectionMetricsState.value = metrics
+            this@FaceDetectionOverlay.predictions = predictions.toTypedArray()
+            boundingBoxOverlay.invalidate()
+            isProcessing = false
+        }
+    }
+    image.close()
+}
+```
+
+## Face embedding generation
+
+The FaceNet model converts face images into embeddings:
+
+```kotlin FaceNet.kt
+// Gets an face embedding using FaceNet
+suspend fun getFaceEmbedding(image: Bitmap) =
+    withContext(Dispatchers.Default) {
+        return@withContext runFaceNet(convertBitmapToBuffer(image))[0]
+    }
+
+// Run the FaceNet model
+private fun runFaceNet(inputs: Any): Array<FloatArray> {
+    val faceNetModelOutputs = Array(1) { FloatArray(embeddingDim) }
+    interpreter.run(inputs, faceNetModelOutputs)
+    return faceNetModelOutputs
+}
+```
+
+The model accepts a 160×160 cropped face image and outputs a 512-dimensional (or 128-dimensional) embedding.
+
+## Vector search with ObjectBox
+
+FaceNet Android uses ObjectBox for efficient nearest-neighbor search:
+
+- **HNSW indexing**: Hierarchical Navigable Small World graphs enable fast approximate nearest-neighbor search
+- **Cosine similarity**: Measures the similarity between face embeddings
+- **Flat search option**: For precise (non-approximate) search, you can enable flat search in the configuration
+
+<Note>
+  The app re-computes cosine similarity between the query vector and the nearest neighbor to account for lossy compression in the vector database.
+</Note>
+
+## Recognition metrics
+
+The `RecognitionMetrics` data class tracks performance:
+
+```kotlin DataModels.kt
+data class RecognitionMetrics(
+    val timeFaceDetection: Long,
+    val timeVectorSearch: Long,
+    val timeFaceEmbedding: Long,
+    val timeFaceSpoofDetection: Long,
+)
+```
+
+## Spoof detection
+
+The app includes anti-spoofing detection to identify if a detected face is real or a spoof (photo, video, 3D model):
+
+- Two models operate on different scales of the same image
+- If a face is detected as a spoof, the label shows: `Name (Spoof: 0.95)`
+- This helps prevent photo-based attacks
+
+<Warning>
+  Spoof detection is not foolproof. For high-security applications, consider additional liveness detection methods.
+</Warning>
+
+## Troubleshooting
+
+### No faces detected
+
+- Ensure adequate lighting
+- Position your face clearly in the camera view
+- Check that camera permissions are granted
+
+### Poor recognition accuracy
+
+- Add more photos of the person from different angles
+- Ensure photos are well-lit and clear
+- Consider using flat search instead of HNSW for smaller datasets
+- Try the 512-dimensional FaceNet model instead of the 128-dimensional version
+
+### Slow performance
+
+- HNSW search is faster than flat search for larger datasets
+- GPU acceleration is enabled by default for FaceNet inference
+- Reduce the number of embeddings in the database if performance is critical
+
+## Next steps
+
+Learn how to optimize recognition performance:
+
+- [Configure FaceNet models and search options](/guides/configuration)

@@ -1,0 +1,90 @@
+---
+title: Choosing a FaceNet model
+description: Select between 128-dimensional and 512-dimensional FaceNet models for face embedding
+---
+
+FaceNet Android supports two different FaceNet models that produce embeddings of different dimensions. The choice between them impacts accuracy, performance, and storage requirements.
+
+## Available models
+
+The app includes two FaceNet models in the `assets` folder:
+
+- `facenet.tflite` - Outputs 128-dimensional embeddings
+- `facenet_512.tflite` - Outputs 512-dimensional embeddings
+
+Both models accept 160×160 pixel face images as input and produce embeddings that capture unique facial features.
+
+<Tip>
+The 512-dimensional model generally provides better accuracy for face recognition, especially with larger datasets, but requires more storage and slightly longer processing time.
+</Tip>
+
+## Switching between models
+
+To change the FaceNet model, you need to update two files: `FaceNet.kt` and `DataModels.kt`.
+
+### Step 1: Update the model path
+
+In `FaceNet.kt:62`, modify the model file path:
+
+```kotlin FaceNet.kt
+// For 128-dimensional embeddings
+interpreter = Interpreter(
+    FileUtil.loadMappedFile(context, "facenet.tflite"), 
+    interpreterOptions
+)
+
+// For 512-dimensional embeddings
+interpreter = Interpreter(
+    FileUtil.loadMappedFile(context, "facenet_512.tflite"), 
+    interpreterOptions
+)
+```
+
+### Step 2: Update the embedding dimension
+
+In `FaceNet.kt:34`, change the `embeddingDim` value:
+
+```kotlin FaceNet.kt
+// For facenet.tflite
+private val embeddingDim = 128
+
+// For facenet_512.tflite
+private val embeddingDim = 512
+```
+
+### Step 3: Update the database schema
+
+In `DataModels.kt:18-21`, update the `@HnswIndex` dimensions:
+
+```kotlin DataModels.kt
+@Entity
+data class FaceImageRecord(
+    @Id var recordID: Long = 0,
+    @Index var personID: Long = 0,
+    var personName: String = "",
+    // Update dimensions to match your chosen model
+    @HnswIndex(
+        dimensions = 512,  // Change to 128 for facenet.tflite
+        distanceType = VectorDistanceType.COSINE,
+    ) var faceEmbedding: FloatArray = floatArrayOf(),
+)
+```
+
+<Warning>
+Changing the embedding dimension requires rebuilding the app and clearing existing data. The ObjectBox database schema will change, and existing face records will be incompatible.
+</Warning>
+
+## Performance comparison
+
+| Model | Embedding Size | Accuracy | Inference Time | Storage per Face |
+|-------|----------------|----------|----------------|------------------|
+| facenet.tflite | 128-dim | Good | ~40-60ms | 512 bytes |
+| facenet_512.tflite | 512-dim | Better | ~50-70ms | 2048 bytes |
+
+<Tip>
+For most use cases with moderate dataset sizes (under 1000 faces), the 512-dimensional model provides the best balance of accuracy and performance.
+</Tip>
+
+## Model source
+
+Both models are sourced from the [deepface](https://github.com/serengil/deepface) library and converted to TensorFlow Lite format with FP16 optimization. See the source README for conversion scripts.

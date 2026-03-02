@@ -1,0 +1,191 @@
+---
+title: Face detectors
+description: Detect and crop faces from images using ML Kit or MediaPipe
+---
+
+Face detector classes provide face detection functionality with two implementations: ML Kit and MediaPipe. Both extend the `BaseFaceDetector` abstract class.
+
+## BaseFaceDetector
+
+Abstract base class that defines the face detection interface and provides common utility methods.
+
+### Methods
+
+#### getCroppedFace
+
+Detects a single face from an image URI and returns the cropped face bitmap.
+
+```kotlin
+abstract suspend fun getCroppedFace(imageUri: Uri): Result<Bitmap>
+```
+
+<ParamField path="imageUri" type="Uri" required>
+  URI of the image to detect faces from
+</ParamField>
+
+<ResponseField name="return" type="Result<Bitmap>">
+  Success with cropped face bitmap, or failure with:
+  - `ErrorCode.NO_FACE`: No face detected
+  - `ErrorCode.MULTIPLE_FACES`: More than one face detected
+  - `ErrorCode.FACE_DETECTOR_FAILURE`: Detection failed or invalid bounding box
+</ResponseField>
+
+#### getAllCroppedFaces
+
+Detects multiple faces from a bitmap and returns cropped faces with bounding boxes.
+
+```kotlin
+abstract suspend fun getAllCroppedFaces(frameBitmap: Bitmap): List<Pair<Bitmap, Rect>>
+```
+
+<ParamField path="frameBitmap" type="Bitmap" required>
+  Bitmap image to detect faces from
+</ParamField>
+
+<ResponseField name="return" type="List<Pair<Bitmap, Rect>>">
+  List of pairs containing cropped face bitmaps and their bounding box rectangles. Only returns valid faces with bounding boxes within image bounds
+</ResponseField>
+
+### Protected utility methods
+
+#### getBitmapFromUri
+
+Loads a bitmap from URI with automatic EXIF orientation correction.
+
+```kotlin
+protected fun getBitmapFromUri(context: Context, imageUri: Uri): Bitmap?
+```
+
+#### validateRect
+
+Checks if a bounding box fits within image dimensions.
+
+```kotlin
+protected fun validateRect(cameraFrameBitmap: Bitmap, boundingBox: Rect): Boolean
+```
+
+#### rotateBitmap
+
+Rotates a bitmap by specified degrees.
+
+```kotlin
+protected fun rotateBitmap(source: Bitmap, degrees: Float): Bitmap
+```
+
+## MLKitFaceDetector
+
+Face detector implementation using Google ML Kit's face detection API.
+
+### Constructor
+
+```kotlin
+MLKitFaceDetector(context: Context)
+```
+
+<ParamField path="context" type="Context" required>
+  Android application context
+</ParamField>
+
+### Detection modes
+
+The class uses two different detector configurations:
+
+<ResponseField name="realTimeFaceDetector" type="FaceDetector">
+  Fast performance mode for real-time detection. Used by `getAllCroppedFaces()`
+</ResponseField>
+
+<ResponseField name="highAccuracyFaceDetector" type="FaceDetector">
+  Accurate performance mode for single image detection. Used by `getCroppedFace()`
+</ResponseField>
+
+### Usage example
+
+```kotlin
+val mlKitDetector = MLKitFaceDetector(context)
+
+// Detect single face from image URI
+val result = mlKitDetector.getCroppedFace(imageUri)
+if (result.isSuccess) {
+    val croppedFace = result.getOrNull()!!
+    // Process cropped face
+}
+
+// Detect multiple faces from camera frame
+val faces = mlKitDetector.getAllCroppedFaces(frameBitmap)
+for ((croppedFace, boundingBox) in faces) {
+    // Process each detected face
+}
+```
+
+Source: `domain/face_detection/MLKitFaceDetector.kt:16`
+
+## MediapipeFaceDetector
+
+Face detector implementation using Google MediaPipe's face detection solution.
+
+### Constructor
+
+```kotlin
+MediapipeFaceDetector(context: Context)
+```
+
+<ParamField path="context" type="Context" required>
+  Android application context for loading the MediaPipe model
+</ParamField>
+
+### Configuration
+
+<ResponseField name="modelName" type="String" default="blaze_face_short_range.tflite">
+  MediaPipe model file loaded from the assets folder
+</ResponseField>
+
+<ResponseField name="runningMode" type="RunningMode" default="IMAGE">
+  MediaPipe running mode configured for static image processing
+</ResponseField>
+
+### Usage example
+
+```kotlin
+val mediapipeDetector = MediapipeFaceDetector(context)
+
+// Detect single face from image URI
+val result = mediapipeDetector.getCroppedFace(imageUri)
+when {
+    result.isSuccess -> {
+        val croppedFace = result.getOrNull()!!
+        // Generate face embedding
+    }
+    result.exceptionOrNull() is AppException -> {
+        val error = result.exceptionOrNull() as AppException
+        when (error.errorCode) {
+            ErrorCode.NO_FACE -> // Handle no face
+            ErrorCode.MULTIPLE_FACES -> // Handle multiple faces
+            else -> // Handle other errors
+        }
+    }
+}
+
+// Detect all faces for recognition
+val faces = mediapipeDetector.getAllCroppedFaces(frameBitmap)
+for ((croppedFace, boundingBox) in faces) {
+    val embedding = faceNet.getFaceEmbedding(croppedFace)
+    // Perform face recognition
+}
+```
+
+Source: `domain/face_detection/MediapipeFaceDetector.kt:19`
+
+## Comparison
+
+| Feature | MLKitFaceDetector | MediapipeFaceDetector |
+|---------|-------------------|------------------------|
+| Library | Google ML Kit | Google MediaPipe |
+| Model | Built-in | blaze_face_short_range.tflite |
+| Performance modes | Fast & Accurate | IMAGE mode |
+| Setup | No model file needed | Requires model in assets |
+
+Both implementations:
+- Handle EXIF orientation automatically
+- Validate bounding boxes
+- Support single and multiple face detection
+- Run on IO dispatcher for non-blocking operation

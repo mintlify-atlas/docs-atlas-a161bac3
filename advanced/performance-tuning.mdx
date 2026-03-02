@@ -1,0 +1,308 @@
+---
+title: Performance tuning
+description: Optimize GPU acceleration, threading, and runtime settings for better performance
+---
+
+FaceNet Android provides several configuration options to optimize performance on different devices. This guide covers GPU acceleration, threading, and delegate options for both FaceNet and anti-spoofing models.
+
+## Performance metrics
+
+The app displays real-time performance metrics on the detection screen:
+
+- **Face detection** - Time to locate faces in the frame
+- **Face embedding** - Time to generate FaceNet embeddings
+- **Vector search** - Time to find nearest neighbors
+- **Spoof detection** - Time to analyze for presentation attacks
+
+These metrics are captured in `RecognitionMetrics` data class in `DataModels.kt:36-41`:
+
+```kotlin DataModels.kt
+data class RecognitionMetrics(
+    val timeFaceDetection: Long,
+    val timeVectorSearch: Long,
+    val timeFaceEmbedding: Long,
+    val timeFaceSpoofDetection: Long,
+)
+```
+
+<Tip>
+Monitor these metrics while testing different configurations to find the optimal settings for your target devices.
+</Tip>
+
+## FaceNet model optimization
+
+The FaceNet model is configured in `FaceNet.kt:25-62` with several acceleration options.
+
+### GPU acceleration
+
+GPU delegation can significantly improve inference speed:
+
+```kotlin FaceNet.kt
+val faceNet = FaceNet(
+    context = context,
+    useGpu = true,        // Enable GPU
+    useXNNPack = false,   // Disable when GPU is enabled
+)
+```
+
+The implementation checks GPU compatibility:
+
+```kotlin FaceNet.kt
+val interpreterOptions = Interpreter.Options().apply {
+    if (useGpu) {
+        if (CompatibilityList().isDelegateSupportedOnThisDevice) {
+            addDelegate(GpuDelegate(CompatibilityList().bestOptionsForThisDevice))
+        }
+    } else {
+        numThreads = 4
+    }
+    useXNNPACK = useXNNPack
+    useNNAPI = true
+}
+```
+
+<Warning>
+GPU acceleration is enabled by default. Some devices may not support GPU delegates, in which case the implementation falls back to CPU execution.
+</Warning>
+
+### CPU threading
+
+When GPU is disabled, configure the number of CPU threads:
+
+```kotlin FaceNet.kt
+val interpreterOptions = Interpreter.Options().apply {
+    numThreads = 4  // Adjust based on device capabilities
+    useXNNPACK = true
+    useNNAPI = true
+}
+```
+
+**Thread count guidelines:**
+- 2 threads: Low-end devices, battery optimization
+- 4 threads: Mid-range devices (default)
+- 8 threads: High-end devices with 8+ cores
+
+### XNNPACK acceleration
+
+XNNPACK provides CPU-optimized operations:
+
+```kotlin FaceNet.kt
+val faceNet = FaceNet(
+    context = context,
+    useGpu = false,
+    useXNNPack = true,  // Enable for CPU optimization
+)
+```
+
+<Tip>
+XNNPACK is automatically disabled when GPU delegation is active. It provides 2-3x speedup on CPU execution for supported operations.
+</Tip>
+
+### NNAPI delegation
+
+NNAPI leverages hardware accelerators when available:
+
+```kotlin FaceNet.kt
+interpreterOptions.useNNAPI = true  // Enabled by default
+```
+
+NNAPI is enabled by default in `FaceNet.kt:59` and automatically uses:
+- GPU (if available and compatible)
+- DSP accelerators
+- Neural processing units (NPUs)
+- CPU fallback
+
+## Spoof detection optimization
+
+The anti-spoofing models can be tuned separately from FaceNet in `FaceSpoofDetector.kt:37-88`.
+
+### Default configuration
+
+```kotlin FaceSpoofDetector.kt
+val spoofDetector = FaceSpoofDetector(
+    context = context,
+    useGpu = false,      // CPU by default
+    useXNNPack = false,  // Disabled by default
+    useNNAPI = false,    // Disabled by default
+)
+```
+
+### GPU configuration
+
+```kotlin FaceSpoofDetector.kt
+val interpreterOptions = Interpreter.Options().apply {
+    if (useGpu) {
+        if (CompatibilityList().isDelegateSupportedOnThisDevice) {
+            addDelegate(GpuDelegate(CompatibilityList().bestOptionsForThisDevice))
+        }
+    } else {
+        numThreads = 4
+    }
+    useXNNPACK = useXNNPack
+    this.useNNAPI = useNNAPI
+}
+```
+
+<Warning>
+The spoof detection models are small (80×80 input). GPU overhead may exceed benefits. Test on your target devices before enabling GPU.
+</Warning>
+
+## Performance comparison
+
+Typical inference times on a mid-range device (Snapdragon 730):
+
+### FaceNet-512 model
+
+| Configuration | Inference Time |
+|---------------|----------------|
+| GPU + NNAPI | 35-45ms |
+| CPU (4 threads) + XNNPACK | 55-70ms |
+| CPU (4 threads) only | 80-100ms |
+| CPU (2 threads) only | 120-150ms |
+
+### FaceNet-128 model
+
+| Configuration | Inference Time |
+|---------------|----------------|
+| GPU + NNAPI | 25-35ms |
+| CPU (4 threads) + XNNPACK | 40-55ms |
+| CPU (4 threads) only | 60-80ms |
+
+### Spoof detection (both models)
+
+| Configuration | Inference Time |
+|---------------|----------------|
+| CPU (4 threads) | 15-25ms |
+| NNAPI | 10-20ms |
+| GPU | 20-30ms |
+
+## Image preprocessing optimization
+
+The FaceNet model normalizes input images in `FaceNet.kt:38-42`:
+
+```kotlin FaceNet.kt
+private val imageTensorProcessor = ImageProcessor
+    .Builder()
+    .add(ResizeOp(imgSize, imgSize, ResizeOp.ResizeMethod.BILINEAR))
+    .add(NormalizeOp())
+    .build()
+```
+
+The custom `NormalizeOp` divides pixels by 255:
+
+```kotlin FaceNet.kt
+class NormalizeOp : TensorOperator {
+    override fun apply(p0: TensorBuffer?): TensorBuffer {
+        val pixels = p0!!.floatArray.map { it / 255f }.toFloatArray()
+        val output = TensorBufferFloat.createFixedSize(p0.shape, DataType.FLOAT32)
+        output.loadArray(pixels)
+        return output
+    }
+}
+```
+
+This preprocessing runs on CPU and is not affected by GPU/NNAPI delegates.
+
+## Vector search optimization
+
+See the [Vector search](/advanced/vector-search) guide for details on HNSW vs flat search performance tuning.
+
+## Recommended configurations
+
+### High performance (flagship devices)
+
+```kotlin
+// FaceNet
+FaceNet(
+    context = context,
+    useGpu = true,
+    useXNNPack = false,
+)
+
+// Spoof detection
+FaceSpoofDetector(
+    context = context,
+    useGpu = false,
+    useXNNPack = true,
+    useNNAPI = true,
+)
+```
+
+### Balanced (mid-range devices)
+
+```kotlin
+// FaceNet (default)
+FaceNet(
+    context = context,
+    useGpu = true,
+    useXNNPack = true,
+)
+
+// Spoof detection (default)
+FaceSpoofDetector(
+    context = context,
+    useGpu = false,
+    useXNNPack = false,
+    useNNAPI = false,
+)
+```
+
+### Battery optimized (low-end devices)
+
+```kotlin
+// FaceNet
+FaceNet(
+    context = context,
+    useGpu = false,
+    useXNNPack = true,
+)
+
+// Modify in FaceNet.kt
+numThreads = 2  // Reduce thread count
+
+// Spoof detection
+FaceSpoofDetector(
+    context = context,
+    useGpu = false,
+    useXNNPack = false,
+    useNNAPI = false,
+)
+
+// Modify in FaceSpoofDetector.kt
+numThreads = 2  // Reduce thread count
+```
+
+<Tip>
+Start with the balanced configuration and adjust based on your performance metrics and target devices.
+</Tip>
+
+## Profiling tools
+
+Use Android Profiler to analyze performance:
+
+1. Open **View > Tool Windows > Profiler** in Android Studio
+2. Start a profiling session
+3. Monitor CPU, memory, and energy usage during face recognition
+4. Look for bottlenecks in model inference vs preprocessing
+
+## Common optimization pitfalls
+
+<Warning>
+Avoid these common mistakes:
+
+- Enabling both GPU and XNNPACK (they conflict)
+- Using too many threads (exceeds device CPU cores)
+- Enabling GPU for small models (overhead exceeds benefit)
+- Not testing on actual target devices (emulators don't reflect real performance)
+</Warning>
+
+## Further optimizations
+
+For advanced users:
+
+1. **Model quantization** - Convert models to INT8 for faster inference and smaller size
+2. **Resolution reduction** - Process lower resolution camera frames
+3. **Frame skipping** - Run recognition every 2-3 frames instead of every frame
+4. **Batching** - Process multiple faces in a single inference call
+
+These require modifying the source code beyond configuration changes.

@@ -1,0 +1,360 @@
+---
+title: Face embeddings
+description: Understanding FaceNet embeddings and how they enable face recognition
+---
+
+Face embeddings are the core of the recognition system. FaceNet transforms face images into high-dimensional vectors that capture unique facial features. This page explains how embeddings work and how they're generated in the app.
+
+## What are face embeddings?
+
+A **face embedding** is a mathematical representation of a face as a vector of numbers. FaceNet produces either:
+
+- **128-dimensional embedding**: `facenet.tflite` model
+- **512-dimensional embedding**: `facenet_512.tflite` model (default)
+
+Each dimension captures different facial features (eye shape, nose width, face geometry, etc.). Faces of the same person produce similar embeddings, while different people produce distant embeddings.
+
+## Why embeddings matter
+
+Raw face images cannot be easily compared:
+
+- Different lighting conditions
+- Various angles and poses  
+- Changing facial expressions
+- Different image resolutions
+
+Embeddings solve this by:
+
+- **Normalizing** variations into a consistent space
+- **Capturing** invariant facial features
+- **Enabling** fast mathematical comparison
+- **Compressing** images into compact vectors
+
+<Info>
+A 512-dimensional embedding (2 KB) is much smaller than a 160×160 RGB image (76 KB), yet contains the essential identity information.
+</Info>
+
+## FaceNet model
+
+The app uses FaceNet, a deep convolutional neural network trained with triplet loss.
+
+### Model specifications
+
+| Property | Value |
+|----------|-------|
+| Input size | 160 × 160 × 3 (RGB) |
+| Output size | 512 floats (or 128) |
+| Format | TFLite with FP16 quantization |
+| Source | [deepface library](https://github.com/serengil/deepface) |
+| Architecture | Inception ResNet v1 |
+| File size | ~23 MB (512D), ~23 MB (128D) |
+
+### Triplet loss training
+
+FaceNet is trained using triplet loss to learn discriminative embeddings:
+
+```
+L = max(||f(a) - f(p)||² - ||f(a) - f(n)||² + α, 0)
+```
+
+Where:
+- `f(x)` = embedding function
+- `a` = anchor image
+- `p` = positive image (same person as anchor)
+- `n` = negative image (different person)
+- `α` = margin (separation between positive and negative pairs)
+
+This ensures:
+- Embeddings of the same person are close together
+- Embeddings of different people are far apart
+- Minimum margin `α` separates positive and negative pairs
+
+<Note>
+The model is pre-trained and not modified by the app. All learning happens during training by the original authors.
+</Note>
+
+## Implementation
+
+The `FaceNet` class wraps the TFLite model:
+
+```kotlin
+@Single
+class FaceNet(
+    context: Context,
+    useGpu: Boolean = true,
+    useXNNPack: Boolean = true,
+) {
+    private val imgSize = 160
+    private val embeddingDim = 512
+    
+    private var interpreter: Interpreter
+    private val imageTensorProcessor = ImageProcessor.Builder()
+        .add(ResizeOp(imgSize, imgSize, ResizeOp.ResizeMethod.BILINEAR))
+        .add(NormalizeOp())
+        .build()
+}
+```
+
+### Initialization
+
+The model is loaded once when the app starts:
+
+```kotlin
+val interpreterOptions = Interpreter.Options().apply {
+    if (useGpu) {
+        if (CompatibilityList().isDelegateSupportedOnThisDevice) {
+            addDelegate(GpuDelegate(CompatibilityList().bestOptionsForThisDevice))
+        }
+    } else {
+        numThreads = 4
+    }
+    useXNNPACK = useXNNPack
+    useNNAPI = true
+}
+
+interpreter = Interpreter(
+    FileUtil.loadMappedFile(context, "facenet_512.tflite"),
+    interpreterOptions
+)
+```
+
+### Hardware acceleration
+
+The app supports multiple acceleration options:
+
+- **GPU Delegate**: Runs inference on GPU if available (~3-5× faster)
+- **NNAPI**: Uses Android Neural Networks API for hardware acceleration  
+- **XNNPACK**: Optimized CPU inference for ARM processors
+- **CPU-only**: Falls back to 4 threads if no acceleration available
+
+<Tip>
+GPU acceleration significantly improves performance on modern devices, reducing embedding generation from ~100ms to ~30ms per face.
+</Tip>
+
+## Generating embeddings
+
+The main method processes a face bitmap and returns an embedding:
+
+```kotlin
+suspend fun getFaceEmbedding(image: Bitmap) =
+    withContext(Dispatchers.Default) {
+        return@withContext runFaceNet(convertBitmapToBuffer(image))[0]
+    }
+```
+
+### Step-by-step process
+
+**1. Image preprocessing**
+
+Convert the cropped face bitmap to a tensor:
+
+```kotlin
+private fun convertBitmapToBuffer(image: Bitmap): ByteBuffer = 
+    imageTensorProcessor.process(TensorImage.fromBitmap(image)).buffer
+```
+
+The `imageTensorProcessor` applies:
+
+- **Resize**: Scale to 160×160 using bilinear interpolation
+- **Normalize**: Divide pixel values by 255 (0-255 → 0.0-1.0)
+
+**2. Normalization operation**
+
+```kotlin
+class NormalizeOp : TensorOperator {
+    override fun apply(p0: TensorBuffer?): TensorBuffer {
+        val pixels = p0!!.floatArray.map { it / 255f }.toFloatArray()
+        val output = TensorBufferFloat.createFixedSize(p0.shape, DataType.FLOAT32)
+        output.loadArray(pixels)
+        return output
+    }
+}
+```
+
+Normalization is critical because:
+- FaceNet was trained on normalized images
+- Ensures consistent input distribution
+- Improves numerical stability
+
+**3. Model inference**
+
+```kotlin
+private fun runFaceNet(inputs: Any): Array<FloatArray> {
+    val faceNetModelOutputs = Array(1) { FloatArray(embeddingDim) }
+    interpreter.run(inputs, faceNetModelOutputs)
+    return faceNetModelOutputs
+}
+```
+
+The interpreter:
+- Takes preprocessed image buffer as input
+- Runs forward pass through neural network
+- Returns 512-dimensional float array
+
+**4. Return embedding**
+
+The embedding is returned as `FloatArray` and stored in ObjectBox:
+
+```kotlin
+val embedding = faceNet.getFaceEmbedding(croppedBitmap)
+imagesVectorDB.addFaceImageRecord(
+    FaceImageRecord(
+        personID = personID,
+        personName = personName,
+        faceEmbedding = embedding  // FloatArray of 512 elements
+    )
+)
+```
+
+## Embedding properties
+
+### Dimensionality
+
+Embeddings live in a 512-dimensional space (or 128D):
+
+```kotlin
+embedding ∈ ℝ^512
+```
+
+Each dimension is a floating-point value typically in range [-1.0, 1.0].
+
+### Normalization
+
+While not L2-normalized by default, embeddings have bounded magnitude due to network architecture.
+
+### Similarity metric
+
+The app uses **cosine similarity** to compare embeddings:
+
+```kotlin
+private fun cosineDistance(x1: FloatArray, x2: FloatArray): Float {
+    var mag1 = 0.0f
+    var mag2 = 0.0f
+    var product = 0.0f
+    for (i in x1.indices) {
+        mag1 += x1[i] * x1[i]
+        mag2 += x2[i] * x2[i]
+        product += x1[i] * x2[i]
+    }
+    mag1 = sqrt(mag1)
+    mag2 = sqrt(mag2)
+    return product / (mag1 * mag2)
+}
+```
+
+Cosine similarity ranges from -1 to 1:
+- **1.0**: Identical vectors (same person, identical image)
+- **0.6-0.8**: Very similar (same person, different images)
+- **0.3-0.5**: Somewhat similar (threshold region)
+- **&lt;0.3**: Different people
+
+<Note>
+The app uses a threshold of **0.3** to determine matches. Cosine similarity above 0.3 indicates the same person.
+</Note>
+
+## Switching models
+
+To use the 128-dimensional model instead:
+
+### 1. Change model path in FaceNet.kt
+
+```kotlin
+interpreter = Interpreter(
+    FileUtil.loadMappedFile(context, "facenet.tflite"),  // Changed from facenet_512.tflite
+    interpreterOptions
+)
+```
+
+### 2. Update embedding dimension
+
+```kotlin
+private val embeddingDim = 128  // Changed from 512
+```
+
+### 3. Update database schema in DataModels.kt
+
+```kotlin
+@Entity
+data class FaceImageRecord(
+    @Id var recordID: Long = 0,
+    @Index var personID: Long = 0,
+    var personName: String = "",
+    @HnswIndex(
+        dimensions = 128,  // Changed from 512
+        distanceType = VectorDistanceType.COSINE,
+    ) var faceEmbedding: FloatArray = floatArrayOf()
+)
+```
+
+<Warning>
+Changing embedding dimensions requires clearing the database, as existing 512D embeddings are incompatible with 128D search indices.
+</Warning>
+
+## Performance characteristics
+
+### Latency
+
+Typical embedding generation times:
+
+| Device | GPU | CPU (4 threads) |
+|--------|-----|----------------|
+| High-end | 25-35ms | 80-100ms |
+| Mid-range | 35-50ms | 100-150ms |
+| Low-end | 50-80ms | 150-250ms |
+
+### Memory
+
+Model memory footprint:
+- Loaded model: ~90 MB in RAM
+- Intermediate tensors: ~15 MB during inference
+- Single embedding: 2 KB (512 floats × 4 bytes)
+
+### Accuracy
+
+128D vs 512D models:
+
+- **512D**: Better accuracy, especially with large databases (>100 people)
+- **128D**: Slightly faster inference, smaller storage, good for small databases
+
+Both models achieve >95% accuracy on standard benchmarks (LFW dataset).
+
+## Quality factors
+
+Embedding quality depends on input image:
+
+**Good inputs**:
+- Frontal face view (±15° rotation)
+- Good lighting (evenly lit face)
+- Minimal occlusions (no sunglasses/masks)
+- Clear image (not blurry)
+- Neutral or slight expression
+
+**Poor inputs**:
+- Profile views (>45° rotation)
+- Harsh shadows or backlighting
+- Partial occlusions
+- Motion blur
+- Extreme expressions
+
+<Tip>
+For best results during enrollment, select clear, well-lit photos with frontal face views. The app works better with 3-5 varied images per person than a single image.
+</Tip>
+
+## Embedding storage
+
+Embeddings are stored in ObjectBox with HNSW indexing:
+
+```kotlin
+@HnswIndex(
+    dimensions = 512,
+    distanceType = VectorDistanceType.COSINE,
+)
+var faceEmbedding: FloatArray = floatArrayOf()
+```
+
+The HNSW (Hierarchical Navigable Small World) index enables:
+- Fast approximate nearest-neighbor search
+- Sublinear query time complexity
+- Efficient storage with lossy compression
+
+See the [vector database](/concepts/vector-database) page for details on how embeddings are searched.
