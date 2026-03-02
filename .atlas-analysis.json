@@ -1,0 +1,102 @@
+{
+  "projectType": "saas",
+  "projectName": "FaceNet Android",
+  "projectDescription": "On-device customizable face recognition in Android with FaceNet and an embedded vector database",
+  "theme": "aspen",
+  "primaryColor": "#6366f1",
+  "lightColor": "#818cf8",
+  "darkColor": "#4f46e5",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/how-it-works",
+              "concepts/architecture",
+              "concepts/face-detection",
+              "concepts/face-embeddings",
+              "concepts/vector-database"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/setup",
+              "guides/adding-faces",
+              "guides/recognizing-faces",
+              "guides/configuration"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/choosing-facenet-model",
+              "advanced/face-detector-options",
+              "advanced/vector-search",
+              "advanced/face-spoof-detection",
+              "advanced/performance-tuning"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "API Reference",
+            "pages": [
+              "reference/facenet",
+              "reference/face-detectors",
+              "reference/vector-database",
+              "reference/data-models"
+            ]
+          },
+          {
+            "group": "Models",
+            "pages": [
+              "reference/models/facenet-models",
+              "reference/models/spoof-detection-models",
+              "reference/models/face-detection-models"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "On-device face recognition with FaceNet embeddings",
+    "Real-time face detection using MediaPipe or MLKit",
+    "Vector database storage with ObjectBox for fast nearest-neighbor search",
+    "Face anti-spoofing detection using FASNet models",
+    "Support for multiple FaceNet models (128-dim and 512-dim embeddings)",
+    "Configurable search algorithms (ANN vs precise NN search)",
+    "Modern Android architecture with Jetpack Compose",
+    "TensorFlow Lite inference with GPU acceleration support"
+  ],
+  "publicApiSurface": [
+    "FaceNet.getFaceEmbedding()",
+    "BaseFaceDetector.getCroppedFace()",
+    "BaseFaceDetector.getAllCroppedFaces()",
+    "MLKitFaceDetector",
+    "MediapipeFaceDetector",
+    "FaceSpoofDetector.detectSpoof()",
+    "ImagesVectorDB.addFaceImageRecord()",
+    "ImagesVectorDB.getNearestEmbeddingPersonName()",
+    "PersonDB",
+    "FaceImageRecord",
+    "PersonRecord",
+    "ImageVectorUseCase",
+    "PersonUseCase"
+  ]
+}
